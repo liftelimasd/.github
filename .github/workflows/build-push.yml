@@ -134,11 +134,13 @@ jobs:
           : > .env
           if [ -n "${ENV_FILE:-}" ]; then printf '%s\n' "$ENV_FILE" > .env; fi
 
+     # Sanity check
       - name: Sanity check
         if: ${{ !inputs.run_tests }}
         run: |
+          set -euo pipefail
           test -f "${BIN_FILE}" || { echo "Binary ${BIN_FILE} not found"; exit 1; }
-          test -f ${{ inputs.dockerfile }} || { echo "Dockerfile not found"; exit 1; }
+          test -f "${{ github.workspace }}/${{ inputs.dockerfile }}" || { echo "Dockerfile not found"; exit 1; }
           ls -la
 
       - name: Set up Docker Buildx
@@ -153,17 +155,20 @@ jobs:
           username: ${{ secrets.REGISTRY_LOGIN }}
           password: ${{ secrets.REGISTRY_PASS }}
 
+      # Build & Push image (with cache)
       - name: Build & Push image (with cache)
         if: ${{ inputs.build_image && !inputs.run_tests }}
         uses: docker/build-push-action@v6
         with:
-          context:     ${{ inputs.context }}
-          file:        ${{ inputs.dockerfile }}
-          build-args:  BIN_FILE=${{ env.BIN_FILE }}
-          tags:        ${{ steps.meta.outputs.image }}
-          push:        true
-          cache-from:  type=gha
-          cache-to:    type=gha,mode=max
+          # делаем абсолютные пути
+          context: ${{ format('{0}/{1}', github.workspace, inputs.context) }}
+          file:    ${{ format('{0}/{1}', github.workspace, inputs.dockerfile) }}
+      
+          build-args: BIN_FILE=${{ env.BIN_FILE }}
+          tags:       ${{ steps.meta.outputs.image }}
+          push:       true
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
 
       - name: Summary
         run: |
