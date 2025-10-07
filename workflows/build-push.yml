@@ -53,10 +53,10 @@ jobs:
         working-directory: ${{ inputs.working_dir }}
 
     env:
-      GO_VERSION: ${{ inputs.go_version }}
-      REGISTRY:   ${{ inputs.registry }}
-      CONFIG_FILE:${{ inputs.config_file }}
-      BIN_FILE:   ${{ inputs.bin_file }}
+      GO_VERSION:  ${{ inputs.go_version }}
+      REGISTRY:    ${{ inputs.registry }}
+      CONFIG_FILE: ${{ inputs.config_file }}
+      BIN_FILE:    ${{ inputs.bin_file }}
 
     steps:
       - name: Checkout
