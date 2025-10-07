@@ -3,40 +3,19 @@ name: Org Build & Push
 on:
   workflow_call:
     inputs:
-      registry:
-        type: string
-        required: true
-      go_version:
-        type: string
-        default: "1.25.0"
-      working_dir:
-        type: string
-        default: "./service"
-      dockerfile:
-        type: string
-        default: "./service/Dockerfile"
-      context:
-        type: string
-        default: "./service"
-      config_file:
-        type: string
-        default: "configs/config.yaml"
-      bin_file:
-        type: string
-        default: "service.linux"
-      build_image:
-        type: boolean
-        default: true
-      run_tests:
-        type: boolean
-        default: false
+      registry:     { type: string, required: true }
+      go_version:   { type: string,  default: "1.25.0" }
+      working_dir:  { type: string,  default: "./service" }
+      dockerfile:   { type: string,  default: "./service/Dockerfile" }
+      context:      { type: string,  default: "./service" }
+      config_file:  { type: string,  default: "configs/config.yaml" }
+      bin_file:     { type: string,  default: "service.linux" }
+      build_image:  { type: boolean, default: true }
+      run_tests:    { type: boolean, default: false }
     secrets:
-      REGISTRY_LOGIN:
-        required: true
-      REGISTRY_PASS:
-        required: true
-      ENV_FILE:
-        required: false
+      REGISTRY_LOGIN: { required: true }
+      REGISTRY_PASS:  { required: true }
+      ENV_FILE:       { required: false }
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -84,8 +63,7 @@ jobs:
 
       - name: Install yq
         run: |
-          sudo wget -qO /usr/local/bin/yq \
-            https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
 
       - name: Derive app name and version
@@ -102,7 +80,6 @@ jobs:
           else RAW_VER="v0.0.0"; fi
           if [[ "$RAW_VER" =~ ^v(.+)$ ]]; then TAG="${BASH_REMATCH[1]}"; else TAG="$RAW_VER"; fi
           [ -n "$TAG" ] || TAG="0.0.0-${GITHUB_SHA::7}"
-
           IMAGE="${REGISTRY}/${NAME}:${TAG}"
           echo "name=$NAME"   >> "$GITHUB_OUTPUT"
           echo "version=$TAG" >> "$GITHUB_OUTPUT"
@@ -113,9 +90,8 @@ jobs:
         run: go test ./...
 
       - name: Build Linux binary
-        if: ${{ !inputs.run_tests }} # test
-        env:
-          CGO_ENABLED: "0"
+        if: ${{ !inputs.run_tests }}
+        env: { CGO_ENABLED: "0" }
         run: |
           GOOS=linux GOARCH=amd64 \
           go build -trimpath -buildvcs=false -ldflags="-s -w" \
@@ -134,7 +110,6 @@ jobs:
           : > .env
           if [ -n "${ENV_FILE:-}" ]; then printf '%s\n' "$ENV_FILE" > .env; fi
 
-     # Sanity check
       - name: Sanity check
         if: ${{ !inputs.run_tests }}
         run: |
@@ -155,24 +130,49 @@ jobs:
           username: ${{ secrets.REGISTRY_LOGIN }}
           password: ${{ secrets.REGISTRY_PASS }}
 
-      # Build & Push image (with cache)
       - name: Build & Push image (with cache)
         if: ${{ inputs.build_image && !inputs.run_tests }}
         uses: docker/build-push-action@v6
         with:
-          # делаем абсолютные пути
-          context: ${{ format('{0}/{1}', github.workspace, inputs.context) }}
-          file:    ${{ format('{0}/{1}', github.workspace, inputs.dockerfile) }}
-      
-          build-args: BIN_FILE=${{ env.BIN_FILE }}
-          tags:       ${{ steps.meta.outputs.image }}
-          push:       true
-          cache-from: type=gha
-          cache-to:   type=gha,mode=max
+          context:     ${{ format('{0}/{1}', github.workspace, inputs.context) }}
+          file:        ${{ format('{0}/{1}', github.workspace, inputs.dockerfile) }}
+          build-args:  BIN_FILE=${{ env.BIN_FILE }}
+          tags:        ${{ steps.meta.outputs.image }}
+          push:        true
+          cache-from:  type=gha
+          cache-to:    type=gha,mode=max
+          provenance:  false
+          sbom:        false
+          labels: |
+            org.opencontainers.image.title=${{ steps.meta.outputs.name }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+          annotations: |
+            org.opencontainers.image.title=${{ steps.meta.outputs.name }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
 
-      - name: Summary
+      - name: Summary + Job Summary
         run: |
-          echo "name:    ${{ steps.meta.outputs.name }}"
-          echo "version: ${{ steps.meta.outputs.version }}"
-          echo "image:   ${{ steps.meta.outputs.image }}"
           echo "::notice title=Build::${{ steps.meta.outputs.name }} v${{ steps.meta.outputs.version }}"
+          {
+            echo "### Build result"
+            echo ""
+            echo "- **Name**: \`${{ steps.meta.outputs.name }}\`"
+            echo "- **Version**: \`${{ steps.meta.outputs.version }}\`"
+            echo "- **Image**: \`${{ steps.meta.outputs.image }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build-info artifact (7 days)
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-info
+          path: |
+            ${{ github.workspace }}/build-info.txt
+          if-no-files-found: ignore
+          retention-days: 7
+        env:
+          # write file right before upload (keeps step atomic)
+          _DUMP: |
+            name=${{ steps.meta.outputs.name }}
+            version=${{ steps.meta.outputs.version }}
+            image=${{ steps.meta.outputs.image }}
+        shell: bash
