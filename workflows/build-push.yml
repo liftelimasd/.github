@@ -1,40 +1,40 @@
-name: Build & Push (reusable)
+name: Org Build & Push
 
 on:
   workflow_call:
     inputs:
-      go_version:
-        required: true
-        type: string
       registry:
+        type: string
         required: true
+      go_version:
         type: string
+        default: "1.25.0"
       working_dir:
-        required: false
         type: string
-        default: ./service
+        default: "./service"
       dockerfile:
-        required: false
         type: string
-        default: ./service/Dockerfile
+        default: "./service/Dockerfile"
       context:
-        required: false
         type: string
-        default: ./service
+        default: "./service"
       config_file:
-        required: false
         type: string
-        default: configs/config.yaml
+        default: "configs/config.yaml"
       bin_file:
-        required: false
         type: string
-        default: service.linux
+        default: "service.linux"
+      build_image:
+        type: boolean
+        default: true
+      run_tests:
+        type: boolean
+        default: false
     secrets:
       REGISTRY_LOGIN:
         required: true
       REGISTRY_PASS:
         required: true
-      # ENV_FILE — puede ser que no hace falta
       ENV_FILE:
         required: false
 
@@ -47,16 +47,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-
     defaults:
       run:
         working-directory: ${{ inputs.working_dir }}
 
     env:
-      GO_VERSION:  ${{ inputs.go_version }}
-      REGISTRY:    ${{ inputs.registry }}
-      CONFIG_FILE: ${{ inputs.config_file }}
-      BIN_FILE:    ${{ inputs.bin_file }}
+      GO_VERSION: ${{ inputs.go_version }}
+      REGISTRY:   ${{ inputs.registry }}
+      CONFIG_FILE:${{ inputs.config_file }}
+      BIN_FILE:   ${{ inputs.bin_file }}
 
     steps:
       - name: Checkout
@@ -72,7 +71,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Cache Go (build + modules)
+      - name: Cache Go build (GOCACHE) and modules (GOMODCACHE)
         uses: actions/cache@v4
         with:
           path: |
@@ -108,7 +107,12 @@ jobs:
           echo "version=$TAG" >> "$GITHUB_OUTPUT"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
+      - name: (Optional) Go tests
+        if: ${{ inputs.run_tests }}
+        run: go test ./...
+
       - name: Build Linux binary
+        if: ${{ !inputs.run_tests }} # test
         env:
           CGO_ENABLED: "0"
         run: |
@@ -117,9 +121,11 @@ jobs:
             -o "${BIN_FILE}" ./cmd/service
 
       - name: Ensure config folder
+        if: ${{ !inputs.run_tests }}
         run: mkdir -p configs
 
-      - name: Create .env from secrets (optional)
+      - name: Create .env from secrets
+        if: ${{ !inputs.run_tests }}
         env:
           ENV_FILE: ${{ secrets.ENV_FILE }}
         shell: bash
@@ -128,15 +134,18 @@ jobs:
           if [ -n "${ENV_FILE:-}" ]; then printf '%s\n' "$ENV_FILE" > .env; fi
 
       - name: Sanity check
+        if: ${{ !inputs.run_tests }}
         run: |
           test -f "${BIN_FILE}" || { echo "Binary ${BIN_FILE} not found"; exit 1; }
           test -f ${{ inputs.dockerfile }} || { echo "Dockerfile not found"; exit 1; }
           ls -la
 
       - name: Set up Docker Buildx
+        if: ${{ inputs.build_image && !inputs.run_tests }}
         uses: docker/setup-buildx-action@v3
 
       - name: Docker login
+        if: ${{ inputs.build_image && !inputs.run_tests }}
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -144,19 +153,20 @@ jobs:
           password: ${{ secrets.REGISTRY_PASS }}
 
       - name: Build & Push image (with cache)
+        if: ${{ inputs.build_image && !inputs.run_tests }}
         uses: docker/build-push-action@v6
         with:
-          context: ${{ inputs.context }}
-          file:    ${{ inputs.dockerfile }}
-          build-args: |
-            BIN_FILE=${{ env.BIN_FILE }}
-          tags: ${{ steps.meta.outputs.image }}
-          push: true
-          cache-from: type=gha
-          cache-to:   type=gha,mode=max
+          context:     ${{ inputs.context }}
+          file:        ${{ inputs.dockerfile }}
+          build-args:  BIN_FILE=${{ env.BIN_FILE }}
+          tags:        ${{ steps.meta.outputs.image }}
+          push:        true
+          cache-from:  type=gha
+          cache-to:    type=gha,mode=max
 
       - name: Summary
         run: |
-          echo "Pushed image: ${{ steps.meta.outputs.image }}"
-          echo "::notice title=Image::${{ steps.meta.outputs.image }}"
-          echo "::notice title=Version::${{ steps.meta.outputs.version }}"
+          echo "name:    ${{ steps.meta.outputs.name }}"
+          echo "version: ${{ steps.meta.outputs.version }}"
+          echo "image:   ${{ steps.meta.outputs.image }}"
+          echo "::notice title=Build::${{ steps.meta.outputs.name }} v${{ steps.meta.outputs.version }}"
