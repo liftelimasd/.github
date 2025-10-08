@@ -12,18 +12,35 @@ on:
       working_dir:
         type: string
         default: "./service"
-      dockerfile:
-        type: string
-        default: "./service/Dockerfile"
       context:
         type: string
         default: "./service"
       config_file:
         type: string
         default: "configs/config.yaml"
-      bin_file:
+
+      # НОВОЕ ↓
+      expose_ports:
+        description: "Ports, example '8134 8135' or '8134,8135'"
         type: string
-        default: "service.linux"
+        default: "8134 8135"
+      go_build_target:
+        description: "Go-package to build"
+        type: string
+        default: "./cmd/service"
+      copy_env_into_image:
+        description: ".env for image"
+        type: boolean
+        default: false
+      runtime_image:
+        description: "Runtime image (default is: distroless)"
+        type: string
+        default: "gcr.io/distroless/static:nonroot"
+      cmd_args:
+        description: "Arguments for binary"
+        type: string
+        default: "-conf /configs"
+
       build_image:
         type: boolean
         default: true
@@ -88,7 +105,6 @@ jobs:
           echo "version=$TAG" >> "$GITHUB_OUTPUT"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-      # (опционально) Тесты можно оставить вне Docker
       - name: (Optional) Go tests
         if: ${{ inputs.run_tests }}
         uses: actions/setup-go@v5
@@ -98,8 +114,8 @@ jobs:
         if: ${{ inputs.run_tests }}
         run: go test ./...
 
-      # Если ты копируешь .env в образ — создаём файл до сборки, чтобы попал в контекст
-      - name: Create .env from secrets
+      - name: Create .env from secrets (if baked)
+        if: ${{ inputs.copy_env_into_image }}
         env:
           ENV_FILE: ${{ secrets.ENV_FILE }}
         shell: bash
@@ -107,10 +123,76 @@ jobs:
           : > .env
           if [ -n "${ENV_FILE:-}" ]; then printf '%s\n' "$ENV_FILE" > .env; fi
 
+      - name: Generate Dockerfile (templated)
+        id: gen
+        shell: bash
+        run: |
+          set -euo pipefail
+          GEN_DOCKERFILE="${RUNNER_TEMP}/Dockerfile.gen"
+
+          PORTS="$(echo "${{ inputs.expose_ports }}" | tr ',' ' ' | xargs || true)"
+          EXPOSE_LINE=""
+          if [ -n "${PORTS}" ]; then
+            EXPOSE_LINE="EXPOSE ${PORTS}"
+          fi
+
+          # Если .env не хотим печь — строка будет пустой
+          COPY_ENV_LINE=""
+          if [ "${{ inputs.copy_env_into_image }}" = "true" ]; then
+            COPY_ENV_LINE="COPY .env /app/.env"
+          fi
+
+          cat > "${GEN_DOCKERFILE}" <<'DOCKERFILE'
+# syntax=docker/dockerfile:1.7
+
+############################
+# Stage 1: Build (Go)
+############################
+FROM golang:__GO_VERSION__ AS builder
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
+
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags="-s -w -buildid=" \
+      -o /out/service.linux __GO_BUILD_TARGET__
+
+############################
+# Stage 2: Runtime
+############################
+FROM __RUNTIME_IMAGE__
+WORKDIR /app
+
+COPY --from=builder /out/service.linux /app/service.linux
+RUN mkdir -p /configs
+COPY configs/config.yaml /configs/config.yaml
+
+__COPY_ENV_LINE__
+__EXPOSE_LINE__
+ENTRYPOINT ["/app/service.linux","-conf","/configs"]
+DOCKERFILE
+
+          # Подставим переменные в шаблон
+          sed -i \
+            -e "s|__GO_VERSION__|${{ inputs.go_version }}|g" \
+            -e "s|__GO_BUILD_TARGET__|${{ inputs.go_build_target }}|g" \
+            -e "s|__RUNTIME_IMAGE__|${{ inputs.runtime_image }}|g" \
+            -e "s|__COPY_ENV_LINE__|${COPY_ENV_LINE}|g" \
+            -e "s|__EXPOSE_LINE__|${EXPOSE_LINE}|g" \
+            "${GEN_DOCKERFILE}"
+
+          echo "dockerfile=${GEN_DOCKERFILE}" >> "$GITHUB_OUTPUT"
+
       - name: Sanity check
         run: |
           set -euo pipefail
-          test -f "${{ github.workspace }}/${{ inputs.dockerfile }}" || { echo "Dockerfile not found"; exit 1; }
+          test -f "${{ steps.gen.outputs.dockerfile }}" || { echo "Generated Dockerfile not found"; exit 1; }
           ls -la
 
       - name: Set up Docker Buildx
@@ -130,8 +212,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ${{ format('{0}/{1}', github.workspace, inputs.context) }}
-          file:    ${{ format('{0}/{1}', github.workspace, inputs.dockerfile) }}
-          # build-args:  больше не нужны — бинарь строится внутри
+          file:    ${{ steps.gen.outputs.dockerfile }}
           tags:       ${{ steps.meta.outputs.image }}
           push:       true
           cache-from: type=gha
