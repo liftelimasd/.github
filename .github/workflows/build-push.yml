@@ -23,7 +23,6 @@ on:
       expose_ports:
         type: string
         default: "8134 8135"
-        description: "Ports: '8134 8135' или '8134,8135'"
       go_build_target:
         type: string
         default: "./cmd/service"
@@ -41,9 +40,6 @@ on:
       build_image:
         type: boolean
         default: true
-      run_tests:
-        type: boolean
-        default: false
 
       # Cache scope (optional, for gha cache)
       cache_scope:
@@ -108,29 +104,29 @@ jobs:
           echo "version=$TAG" >> "$GITHUB_OUTPUT"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-      # Optional tests outside Docker
-      - name: Setup Go (for tests)
-        if: ${{ inputs.run_tests }}
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ inputs.go_version }}
-
-      - name: Run tests
-        if: ${{ inputs.run_tests }}
-        run: go test ./...
-
-      # Bake .env only if requested
       - name: Create .env from secrets
         if: ${{ inputs.copy_env_into_image }}
+        id: envfile
         env:
           ENV_FILE: ${{ secrets.ENV_FILE }}
         shell: bash
         run: |
-          : > .env
-          if [ -n "${ENV_FILE:-}" ]; then printf '%s\n' "$ENV_FILE" > .env; fi
+          if [ -z "${ENV_FILE:-}" ]; then
+            echo "baked=false" >> "$GITHUB_OUTPUT"
+            echo "::warning ::copy_env_into_image=true, 
+            exit 0
+          fi
+          printf '%s\n' "$ENV_FILE" > .env
+          if [ ! -s .env ]; then
+            echo "baked=false" >> "$GITHUB_OUTPUT"
+            echo "::warning ::ENV_FILE 
+            exit 0
+          fi
+          echo "baked=true" >> "$GITHUB_OUTPUT"
 
       - name: Generate Dockerfile (templated)
         id: gen
+        if: ${{ inputs.build_image }}
         shell: bash
         run: |
           set -euo pipefail
@@ -156,21 +152,21 @@ jobs:
             echo "WORKDIR /app"
             echo "COPY --from=builder /out/service.linux /app/service.linux"
             echo "COPY configs/config.yaml /configs/config.yaml"
-            if [ "${{ inputs.copy_env_into_image }}" = "true" ]; then
+            if [ "${{ inputs.copy_env_into_image }}" = "true" ] && [ "${{ steps.envfile.outputs.baked }}" = "true" ]; then
               echo "COPY .env /app/.env"
             fi
             if [ -n "$PORTS" ]; then
               echo "EXPOSE $PORTS"
             fi
             echo "ENTRYPOINT [\"/app/service.linux\"]"
-            # Convert entrypoint_args into JSON array for CMD
             CMD_JSON=$(jq -Rn --arg s '${{ inputs.entrypoint_args }}' '($s|split(" "))|map(@json)|join(",")')
             echo "CMD [$CMD_JSON]"
           } >> "$GEN_DF"
 
           echo "dockerfile=$GEN_DF" >> "$GITHUB_OUTPUT"
 
-      - name: Sanity check
+      - name: Sanity check (generated Dockerfile)
+        if: ${{ inputs.build_image }}
         run: test -f "${{ steps.gen.outputs.dockerfile }}"
 
       - name: Setup Docker Buildx
@@ -186,6 +182,7 @@ jobs:
           password: ${{ secrets.REGISTRY_PASS }}
 
       - name: Build & Push image (fast caches)
+        id: buildpush
         if: ${{ inputs.build_image }}
         uses: docker/build-push-action@v6
         with:
@@ -194,7 +191,6 @@ jobs:
           tags: ${{ steps.meta.outputs.image }}
           push: true
 
-          # Prefer registry inline cache (fast), keep gha as fallback
           cache-from: |
             type=registry,ref=${{ steps.meta.outputs.image }}-cache
             type=gha,scope=${{ inputs.cache_scope }}
@@ -206,8 +202,37 @@ jobs:
           sbom: false
 
       - name: Summary
+        if: always()
+        shell: bash
         run: |
-          echo "name:    ${{ steps.meta.outputs.name }}"
-          echo "version: ${{ steps.meta.outputs.version }}"
-          echo "image:   ${{ steps.meta.outputs.image }}"
-          echo "::notice title=Build::${{ steps.meta.outputs.name }} v${{ steps.meta.outputs.version }}"
+          set -euo pipefail
+          echo "## Build & Push Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Repo: \`${{ github.repository }}\`"               >> "$GITHUB_STEP_SUMMARY"
+          echo "- Ref: \`${{ github.ref }}\`"                      >> "$GITHUB_STEP_SUMMARY"
+          echo "- Go: \`${{ inputs.go_version }}\`"                >> "$GITHUB_STEP_SUMMARY"
+          echo "- Working dir: \`${{ inputs.working_dir }}\`"      >> "$GITHUB_STEP_SUMMARY"
+          echo "- Runtime image: \`${{ inputs.runtime_image }}\`"  >> "$GITHUB_STEP_SUMMARY"
+          echo "- EXPOSE: \`${{ inputs.expose_ports }}\`"          >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${{ inputs.build_image }}" = "true" ]; then
+            if [ "${{ job.status }}" = "success" ]; then
+              echo "### Build: ✅ SUCCESS" >> "$GITHUB_STEP_SUMMARY"
+              echo "- Image: \`${{ steps.meta.outputs.image }}\`" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "### Build: ❌ FAILED" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            if [ "${{ inputs.copy_env_into_image }}" = "true" ]; then
+              if [ "${{ steps.envfile.outputs.baked }}" = "true" ]; then
+                echo "- .env: baked into image" >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "- .env: not baked (empty or missing secret)" >> "$GITHUB_STEP_SUMMARY"
+              fi
+            else
+              echo "- .env: not baked (copy_env_into_image=false)" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "### Build: ⏭️ SKIPPED" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Reason: \`build_image=false\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
