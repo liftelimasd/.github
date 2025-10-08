@@ -58,9 +58,7 @@ concurrency:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    permissions: inherit
 
     defaults:
       run:
@@ -78,16 +76,19 @@ jobs:
           ref: ${{ github.sha }}
           sparse-checkout: |
             ${{ inputs.working_dir }}
-          sparse-checkout-cone: true
+          sparse-checkout-cone-mode: true
 
       - name: Fetch tags (shallow)
         run: git fetch --force --tags --depth=1
         working-directory: .
 
-      - name: Install yq
+      - name: Install yq and jq
         run: |
+          set -e
           sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
+          sudo apt-get update -y
+          sudo apt-get install -y jq
 
       - name: Derive app name and version
         id: meta
@@ -105,10 +106,10 @@ jobs:
           [ -n "$TAG" ] || TAG="0.0.0-${GITHUB_SHA::7}"
           IMAGE="${REGISTRY}/${NAME}:${TAG}"
           CACHE_IMAGE="${REGISTRY}/${NAME}:buildcache"
-          echo "name=$NAME"                 >> "$GITHUB_OUTPUT"
-          echo "version=$TAG"               >> "$GITHUB_OUTPUT"
-          echo "image=$IMAGE"               >> "$GITHUB_OUTPUT"
-          echo "cache_image=$CACHE_IMAGE"   >> "$GITHUB_OUTPUT"
+          echo "name=$NAME"               >> "$GITHUB_OUTPUT"
+          echo "version=$TAG"             >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE"             >> "$GITHUB_OUTPUT"
+          echo "cache_image=$CACHE_IMAGE" >> "$GITHUB_OUTPUT"
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -166,10 +167,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ inputs.context }}" != "${{ inputs.working_dir }}" ]; then
-            mkdir -p "${{ github.workspace }}/${{ inputs.context }}"
-            cp -f ./service.linux "${{ github.workspace }}/${{ inputs.context }}/service.linux"
-            if [ -f "./.env" ]; then cp -f ./.env "${{ github.workspace }}/${{ inputs.context }}/.env"; fi
+          WORK_ABS="$(realpath "${{ inputs.working_dir }}")"
+          CTX_ABS="$(realpath -m "${{ github.workspace }}/${{ inputs.context }}")"
+          SRC_BIN="${WORK_ABS}/service.linux"
+          SRC_ENV="${WORK_ABS}/.env"
+          if [ "$CTX_ABS" != "$WORK_ABS" ]; then
+            mkdir -p "$CTX_ABS"
+            cp -f "$SRC_BIN" "$CTX_ABS/service.linux"
+            if [ -f "$SRC_ENV" ]; then cp -f "$SRC_ENV" "$CTX_ABS/.env"; fi
           fi
 
       - name: Generate Dockerfile
