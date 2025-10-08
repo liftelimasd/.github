@@ -195,8 +195,12 @@ jobs:
           file:    ${{ steps.gen.outputs.dockerfile }}
           tags:       ${{ steps.meta.outputs.image }}
           push:       true
-          cache-from: type=gha
-          cache-to:   type=gha,mode=max
+          cache-from: |
+            type=gha,scope=org-go
+            type=registry,ref=${{ steps.meta.outputs.image }}-cache
+          cache-to: |
+            type=gha,mode=max,scope=org-go
+            type=registry,ref=${{ steps.meta.outputs.image }}-cache,mode=max
 
       - name: Summary
         run: |
