@@ -52,13 +52,8 @@ jobs:
         working-directory: ${{ inputs.working_dir }}
 
     env:
-      GO_VERSION:  ${{ inputs.go_version }}
       REGISTRY:    ${{ inputs.registry }}
       CONFIG_FILE: ${{ inputs.config_file }}
-      BIN_FILE:    ${{ inputs.bin_file }}
-
-      GOMODCACHE:  ${{ github.workspace }}/.gomodcache
-      GOCACHE:     ${{ github.workspace }}/.gocache
 
     steps:
       - name: Checkout
@@ -67,13 +62,6 @@ jobs:
           fetch-depth: 0
           submodules: recursive
           ref: ${{ github.sha }}
-
-      - name: Setup Go (with cache)
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-          cache-dependency-path: ${{ inputs.working_dir }}/go.sum
 
       - name: Install yq
         run: |
@@ -100,26 +88,18 @@ jobs:
           echo "version=$TAG" >> "$GITHUB_OUTPUT"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
+      # (опционально) Тесты можно оставить вне Docker
       - name: (Optional) Go tests
+        if: ${{ inputs.run_tests }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go_version }}
+      - name: Run tests
         if: ${{ inputs.run_tests }}
         run: go test ./...
 
-      - name: Build Linux binary
-        if: ${{ !inputs.run_tests }}
-        env:
-          CGO_ENABLED: "0"
-        run: |
-          # go увидит GOMODCACHE и GOCACHE из env
-          GOOS=linux GOARCH=amd64 \
-          go build -trimpath -buildvcs=false -ldflags="-s -w" \
-            -o "${BIN_FILE}" ./cmd/service
-
-      - name: Ensure config folder
-        if: ${{ !inputs.run_tests }}
-        run: mkdir -p configs
-
+      # Если ты копируешь .env в образ — создаём файл до сборки, чтобы попал в контекст
       - name: Create .env from secrets
-        if: ${{ !inputs.run_tests }}
         env:
           ENV_FILE: ${{ secrets.ENV_FILE }}
         shell: bash
@@ -128,32 +108,30 @@ jobs:
           if [ -n "${ENV_FILE:-}" ]; then printf '%s\n' "$ENV_FILE" > .env; fi
 
       - name: Sanity check
-        if: ${{ !inputs.run_tests }}
         run: |
           set -euo pipefail
-          test -f "${BIN_FILE}" || { echo "Binary ${BIN_FILE} not found"; exit 1; }
           test -f "${{ github.workspace }}/${{ inputs.dockerfile }}" || { echo "Dockerfile not found"; exit 1; }
           ls -la
 
       - name: Set up Docker Buildx
-        if: ${{ inputs.build_image && !inputs.run_tests }}
+        if: ${{ inputs.build_image }}
         uses: docker/setup-buildx-action@v3
 
       - name: Docker login
-        if: ${{ inputs.build_image && !inputs.run_tests }}
+        if: ${{ inputs.build_image }}
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.REGISTRY_LOGIN }}
           password: ${{ secrets.REGISTRY_PASS }}
 
-      - name: Build & Push image (with cache)
-        if: ${{ inputs.build_image && !inputs.run_tests }}
+      - name: Build & Push image (BuildKit cache)
+        if: ${{ inputs.build_image }}
         uses: docker/build-push-action@v6
         with:
           context: ${{ format('{0}/{1}', github.workspace, inputs.context) }}
           file:    ${{ format('{0}/{1}', github.workspace, inputs.dockerfile) }}
-          build-args: BIN_FILE=${{ env.BIN_FILE }}
+          # build-args:  больше не нужны — бинарь строится внутри
           tags:       ${{ steps.meta.outputs.image }}
           push:       true
           cache-from: type=gha
