@@ -19,7 +19,6 @@ on:
         type: string
         default: "configs/config.yaml"
 
-      # Dockerfile template inputs
       expose_ports:
         type: string
         default: "8134 8135"
@@ -36,12 +35,10 @@ on:
         type: string
         default: "-conf /configs"
 
-      # Build behavior
       build_image:
         type: boolean
         default: true
 
-      # Cache scope (optional, for gha cache)
       cache_scope:
         type: string
         default: "org-go"
@@ -63,6 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
 
     defaults:
       run:
@@ -73,12 +71,18 @@ jobs:
       CONFIG_FILE: ${{ inputs.config_file }}
 
     steps:
-      - name: Checkout
+      - name: Checkout (shallow + sparse)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          submodules: recursive
+          fetch-depth: 1
           ref: ${{ github.sha }}
+          sparse-checkout: |
+            ${{ inputs.working_dir }}
+          sparse-checkout-cone: true
+
+      - name: Fetch tags (shallow)
+        run: git fetch --force --tags --depth=1
+        working-directory: .
 
       - name: Install yq
         run: |
@@ -100,67 +104,86 @@ jobs:
           if [[ "$RAW_VER" =~ ^v(.+)$ ]]; then TAG="${BASH_REMATCH[1]}"; else TAG="$RAW_VER"; fi
           [ -n "$TAG" ] || TAG="0.0.0-${GITHUB_SHA::7}"
           IMAGE="${REGISTRY}/${NAME}:${TAG}"
-          echo "name=$NAME"   >> "$GITHUB_OUTPUT"
-          echo "version=$TAG" >> "$GITHUB_OUTPUT"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          CACHE_IMAGE="${REGISTRY}/${NAME}:buildcache"
+          echo "name=$NAME"                 >> "$GITHUB_OUTPUT"
+          echo "version=$TAG"               >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE"               >> "$GITHUB_OUTPUT"
+          echo "cache_image=$CACHE_IMAGE"   >> "$GITHUB_OUTPUT"
 
-      - name: Create .env from secrets
-        if: ${{ inputs.copy_env_into_image }}
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go_version }}
+          cache: false
+
+      - name: Cache Go build/mod
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: gomod-${{ runner.os }}-go${{ inputs.go_version }}-${{ hashFiles(format('{0}/go.sum', inputs.working_dir)) }}
+          restore-keys: |
+            gomod-${{ runner.os }}-go${{ inputs.go_version }}-
+
+      - name: Build linux/amd64 binary
+        if: ${{ inputs.build_image }}
+        run: |
+          set -euo pipefail
+          export CGO_ENABLED=0
+          export GOOS=linux
+          export GOARCH=amd64
+          go mod download
+          go build -trimpath -ldflags="-s -w -buildid=" -o ./service.linux ${{ inputs.go_build_target }}
+          file ./service.linux
+
+      - name: Create .env from secret
+        if: ${{ inputs.build_image && inputs.copy_env_into_image }}
         id: envfile
         env:
           ENV_FILE: ${{ secrets.ENV_FILE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ENV_FILE:-}" ]; then
+            echo "baked=false" >> "$GITHUB_OUTPUT"
+            echo "::warning ::copy_env_into_image=true but ENV_FILE is empty"
+            exit 0
+          fi
+          printf '%s\n' "$ENV_FILE" > .env
+          if [ ! -s .env ]; then
+            echo "baked=false" >> "$GITHUB_OUTPUT"
+            echo "::warning ::.env generated but empty"
+            exit 0
+          fi
+          if [ -f .dockerignore ] && grep -E '(^|/)\.env(\s|$)' .dockerignore >/dev/null 2>&1; then
+            echo "::error ::.dockerignore excludes .env; update it or disable copy_env_into_image"
+            exit 1
+          fi
+          echo "baked=true" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure binary is inside build context
+        if: ${{ inputs.build_image }}
         shell: bash
         run: |
           set -euo pipefail
-
-          if [ -z "${ENV_FILE:-}" ]; then
-            echo "baked=false" >> "$GITHUB_OUTPUT"
-            echo "::warning ::copy_env_into_image=true, but secret ENV_FILE is empty — .env can not be seeded"
-            exit 0
+          if [ "${{ inputs.context }}" != "${{ inputs.working_dir }}" ]; then
+            mkdir -p "${{ github.workspace }}/${{ inputs.context }}"
+            cp -f ./service.linux "${{ github.workspace }}/${{ inputs.context }}/service.linux"
+            if [ -f "./.env" ]; then cp -f ./.env "${{ github.workspace }}/${{ inputs.context }}/.env"; fi
           fi
 
-          printf '%s\n' "$ENV_FILE" > .env
-
-          if [ ! -s .env ]; then
-            echo "baked=false" >> "$GITHUB_OUTPUT"
-            echo "::warning ::ENV_FILE saved, but file .env is empty — .env can not be seeded"
-            exit 0
-          fi
-
-          if [ -f .dockerignore ] && grep -E '(^|/)\.env(\s|$)' .dockerignore >/dev/null 2>&1; then
-            echo "::error ::In .dockerignore found rule, to igore .env. Delete '.env' or update '!.env' on file."
-            exit 1
-          fi
-
-          echo "baked=true" >> "$GITHUB_OUTPUT"
-
-      - name: Generate Dockerfile (templated)
-        id: gen
+      - name: Generate Dockerfile
         if: ${{ inputs.build_image }}
+        id: gen
         shell: bash
         run: |
           set -euo pipefail
           GEN_DF="${RUNNER_TEMP}/Dockerfile.gen"
           PORTS="$(echo "${{ inputs.expose_ports }}" | tr ',' ' ' | xargs || true)"
-
-          echo "# syntax=docker/dockerfile:1.7" > "$GEN_DF"
           {
-            echo
-            echo "FROM golang:${{ inputs.go_version }} AS builder"
-            echo "WORKDIR /src"
-            echo "COPY go.mod go.sum ./"
-            echo "RUN --mount=type=cache,target=/go/pkg/mod \\"
-            echo "    --mount=type=cache,target=/root/.cache/go-build \\"
-            echo "    go mod download"
-            echo "COPY . ."
-            echo "RUN --mount=type=cache,target=/go/pkg/mod \\"
-            echo "    --mount=type=cache,target=/root/.cache/go-build \\"
-            echo "    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \\"
-            echo "    go build -trimpath -ldflags=\"-s -w -buildid=\" -o /out/service.linux ${{ inputs.go_build_target }}"
-            echo
             echo "FROM ${{ inputs.runtime_image }}"
             echo "WORKDIR /app"
-            echo "COPY --from=builder /out/service.linux /app/service.linux"
+            echo "COPY service.linux /app/service.linux"
             echo "COPY configs/config.yaml /configs/config.yaml"
             if [ "${{ inputs.copy_env_into_image }}" = "true" ] && [ "${{ steps.envfile.outputs.baked }}" = "true" ]; then
               echo "COPY .env /app/.env"
@@ -171,11 +194,10 @@ jobs:
             echo "ENTRYPOINT [\"/app/service.linux\"]"
             CMD_JSON=$(jq -Rn --arg s '${{ inputs.entrypoint_args }}' '($s|split(" "))|map(@json)|join(",")')
             echo "CMD [$CMD_JSON]"
-          } >> "$GEN_DF"
-
+          } > "$GEN_DF"
           echo "dockerfile=$GEN_DF" >> "$GITHUB_OUTPUT"
 
-      - name: Sanity check (generated Dockerfile)
+      - name: Sanity check (Dockerfile)
         if: ${{ inputs.build_image }}
         run: test -f "${{ steps.gen.outputs.dockerfile }}"
 
@@ -191,7 +213,7 @@ jobs:
           username: ${{ secrets.REGISTRY_LOGIN }}
           password: ${{ secrets.REGISTRY_PASS }}
 
-      - name: Build & Push image (fast caches)
+      - name: Build & Push image
         id: buildpush
         if: ${{ inputs.build_image }}
         uses: docker/build-push-action@v6
@@ -200,14 +222,12 @@ jobs:
           file: ${{ steps.gen.outputs.dockerfile }}
           tags: ${{ steps.meta.outputs.image }}
           push: true
-
           cache-from: |
-            type=registry,ref=${{ steps.meta.outputs.image }}-cache
-            type=gha,scope=${{ inputs.cache_scope }}
+            type=registry,ref=${{ steps.meta.outputs.cache_image }}
+            type=gha,scope=${{ inputs.cache_scope }}-go${{ inputs.go_version }}
           cache-to: |
-            type=registry,ref=${{ steps.meta.outputs.image }}-cache,mode=max
-            type=gha,mode=max,scope=${{ inputs.cache_scope }}
-
+            type=registry,ref=${{ steps.meta.outputs.cache_image }},mode=max
+            type=gha,mode=max,scope=${{ inputs.cache_scope }}-go${{ inputs.go_version }}
           provenance: false
           sbom: false
 
@@ -217,21 +237,18 @@ jobs:
         run: |
           set -euo pipefail
           echo "## Build & Push Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- Repo: \`${{ github.repository }}\`"               >> "$GITHUB_STEP_SUMMARY"
           echo "- Ref: \`${{ github.ref }}\`"                      >> "$GITHUB_STEP_SUMMARY"
           echo "- Go: \`${{ inputs.go_version }}\`"                >> "$GITHUB_STEP_SUMMARY"
           echo "- Working dir: \`${{ inputs.working_dir }}\`"      >> "$GITHUB_STEP_SUMMARY"
           echo "- Runtime image: \`${{ inputs.runtime_image }}\`"  >> "$GITHUB_STEP_SUMMARY"
           echo "- EXPOSE: \`${{ inputs.expose_ports }}\`"          >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
           if [ "${{ inputs.build_image }}" = "true" ]; then
             if [ "${{ job.status }}" = "success" ]; then
-              echo "### Build: ✅ SUCCESS" >> "$GITHUB_STEP_SUMMARY"
+              echo "### Build: SUCCESS" >> "$GITHUB_STEP_SUMMARY"
               echo "- Image: \`${{ steps.meta.outputs.image }}\`" >> "$GITHUB_STEP_SUMMARY"
             else
-              echo "### Build: ❌ FAILED" >> "$GITHUB_STEP_SUMMARY"
+              echo "### Build: FAILED" >> "$GITHUB_STEP_SUMMARY"
             fi
             if [ "${{ inputs.copy_env_into_image }}" = "true" ]; then
               if [ "${{ steps.envfile.outputs.baked }}" = "true" ]; then
@@ -243,6 +260,5 @@ jobs:
               echo "- .env: not baked (copy_env_into_image=false)" >> "$GITHUB_STEP_SUMMARY"
             fi
           else
-            echo "### Build: ⏭️ SKIPPED" >> "$GITHUB_STEP_SUMMARY"
-            echo "- Reason: \`build_image=false\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "### Build: SKIPPED (build_image=false)" >> "$GITHUB_STEP_SUMMARY"
           fi
