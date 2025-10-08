@@ -111,17 +111,27 @@ jobs:
           ENV_FILE: ${{ secrets.ENV_FILE }}
         shell: bash
         run: |
+          set -euo pipefail
+
           if [ -z "${ENV_FILE:-}" ]; then
             echo "baked=false" >> "$GITHUB_OUTPUT"
-            echo "::warning ::copy_env_into_image=true, 
+            echo "::warning ::copy_env_into_image=true, but secret ENV_FILE is empty — .env can not be seeded"
             exit 0
           fi
+
           printf '%s\n' "$ENV_FILE" > .env
+
           if [ ! -s .env ]; then
             echo "baked=false" >> "$GITHUB_OUTPUT"
-            echo "::warning ::ENV_FILE 
+            echo "::warning ::ENV_FILE saved, but file .env is empty — .env can not be seeded"
             exit 0
           fi
+
+          if [ -f .dockerignore ] && grep -E '(^|/)\.env(\s|$)' .dockerignore >/dev/null 2>&1; then
+            echo "::error ::In .dockerignore found rule, to igore .env. Delete '.env' or update '!.env' on file."
+            exit 1
+          fi
+
           echo "baked=true" >> "$GITHUB_OUTPUT"
 
       - name: Generate Dockerfile (templated)
