@@ -1,0 +1,68 @@
+name: Org PR Check
+
+on:
+  workflow_call:
+    inputs:
+      go_version:
+        type: string
+        default: "1.25.0"
+      working_dir:
+        type: string
+        default: "./service"
+      run_tests:
+        description: "Execute or not go test ./..."
+        type: boolean
+        default: true
+      build_smoke:
+        description: "Build binary (smoke build)"
+        type: boolean
+        default: true
+    secrets: {}
+
+concurrency:
+  group: pr-${{ github.event.pull_request.head.ref || github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr-check:
+    name: pr-check
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_dir }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Setup Go (with cache)
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go_version }}
+          cache: true
+          cache-dependency-path: ${{ inputs.working_dir }}/go.sum
+
+      - name: Go mod download
+        run: go mod download
+
+      - name: Build (smoke)
+        if: ${{ inputs.build_smoke }}
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          GOOS=linux GOARCH=amd64 \
+          go build -trimpath -buildvcs=false -ldflags="-s -w -buildid=" \
+            -o service.linux ./cmd/service
+
+      - name: Unit tests
+        if: ${{ inputs.run_tests }}
+        run: go test ./...
+
+      - name: Unit tests (skipped)
+        if: ${{ !inputs.run_tests }}
+        run: echo "Tests skipped by configuration — OK ✅"
