@@ -153,7 +153,6 @@ jobs:
             echo "FROM ${{ inputs.runtime_image }}"
             echo "WORKDIR /app"
             echo "COPY --from=builder /out/service.linux /app/service.linux"
-            echo "RUN mkdir -p /configs"
             echo "COPY configs/config.yaml /configs/config.yaml"
             if [ "${{ inputs.copy_env_into_image }}" = "true" ]; then
               echo "COPY .env /app/.env"
