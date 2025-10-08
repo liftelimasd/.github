@@ -19,9 +19,9 @@ on:
         type: string
         default: "configs/config.yaml"
 
-      # НОВОЕ ↓
+      # === Параметры шаблона Dockerfile ===
       expose_ports:
-        description: "Ports, example '8134 8135' or '8134,8135'"
+        description: "Ports: '8134 8135' или '8134,8135'"
         type: string
         default: "8134 8135"
       go_build_target:
@@ -29,15 +29,15 @@ on:
         type: string
         default: "./cmd/service"
       copy_env_into_image:
-        description: ".env for image"
+        description: "Включать .env внутрь образа (небезопасно)"
         type: boolean
         default: false
       runtime_image:
-        description: "Runtime image (default is: distroless)"
+        description: "Runtime image"
         type: string
         default: "gcr.io/distroless/static:nonroot"
-      cmd_args:
-        description: "Arguments for binary"
+      entrypoint_args:
+        description: "Аргументы для бинаря"
         type: string
         default: "-conf /configs"
 
@@ -105,15 +105,17 @@ jobs:
           echo "version=$TAG" >> "$GITHUB_OUTPUT"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-      - name: (Optional) Go tests
+      # (опционально) тесты
+      - name: (Optional) Setup Go for tests
         if: ${{ inputs.run_tests }}
         uses: actions/setup-go@v5
         with:
           go-version: ${{ inputs.go_version }}
-      - name: Run tests
+      - name: (Optional) Run tests
         if: ${{ inputs.run_tests }}
         run: go test ./...
 
+      # .env генерим только если реально хотим печь в образ
       - name: Create .env from secrets (if baked)
         if: ${{ inputs.copy_env_into_image }}
         env:
@@ -123,71 +125,50 @@ jobs:
           : > .env
           if [ -n "${ENV_FILE:-}" ]; then printf '%s\n' "$ENV_FILE" > .env; fi
 
-      - name: Generate Dockerfile (templated)
+      - name: Generate Dockerfile (templated, no sed)
         id: gen
         shell: bash
         run: |
           set -euo pipefail
-          GEN_DOCKERFILE="${RUNNER_TEMP}/Dockerfile.gen"
+          GEN_DF="${RUNNER_TEMP}/Dockerfile.gen"
 
+          # normalize ports
           PORTS="$(echo "${{ inputs.expose_ports }}" | tr ',' ' ' | xargs || true)"
-          EXPOSE_LINE=""
-          if [ -n "${PORTS}" ]; then
-            EXPOSE_LINE="EXPOSE ${PORTS}"
-          fi
 
-          # Если .env не хотим печь — строка будет пустой
-          COPY_ENV_LINE=""
-          if [ "${{ inputs.copy_env_into_image }}" = "true" ]; then
-            COPY_ENV_LINE="COPY .env /app/.env"
-          fi
+          {
+            echo "# syntax=docker/dockerfile:1.7"
+            echo
+            echo "FROM golang:${{ inputs.go_version }} AS builder"
+            echo "WORKDIR /src"
+            echo "COPY go.mod go.sum ./"
+            echo "RUN --mount=type=cache,target=/go/pkg/mod \\"
+            echo "    --mount=type=cache,target=/root/.cache/go-build \\"
+            echo "    go mod download"
+            echo "COPY . ."
+            echo "RUN --mount=type=cache,target=/go/pkg/mod \\"
+            echo "    --mount=type=cache,target=/root/.cache/go-build \\"
+            echo "    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \\"
+            echo "    go build -trimpath -ldflags=\"-s -w -buildid=\" -o /out/service.linux ${{ inputs.go_build_target }}"
+            echo
+            echo "FROM ${{ inputs.runtime_image }}"
+            echo "WORKDIR /app"
+            echo "COPY --from=builder /out/service.linux /app/service.linux"
+            echo "RUN mkdir -p /configs"
+            echo "COPY configs/config.yaml /configs/config.yaml"
+            if [ "${{ inputs.copy_env_into_image }}" = "true" ]; then
+              echo "COPY .env /app/.env"
+            fi
+            if [ -n "$PORTS" ]; then
+              echo "EXPOSE $PORTS"
+            fi
+            # ENTRYPOINT + CMD раздельно, чтобы можно было менять cmd_args при запуске
+            echo "ENTRYPOINT [\"/app/service.linux\"]"
+            # Преобразуем строку аргументов в массив JSON безопасно:
+            # здесь оставим одной строкой – Kubernetes/Compose всё равно могут переопределить CMD.
+            printf 'CMD [%s]\n' "$(jq -Rn --arg s '${{ inputs.entrypoint_args }}' '($s|split(" "))|map(@json)|join(",")')"
+          } > "$GEN_DF"
 
-          cat > "${GEN_DOCKERFILE}" <<'DOCKERFILE'
-# syntax=docker/dockerfile:1.7
-
-############################
-# Stage 1: Build (Go)
-############################
-FROM golang:__GO_VERSION__ AS builder
-WORKDIR /src
-
-COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    go mod download
-
-COPY . .
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags="-s -w -buildid=" \
-      -o /out/service.linux __GO_BUILD_TARGET__
-
-############################
-# Stage 2: Runtime
-############################
-FROM __RUNTIME_IMAGE__
-WORKDIR /app
-
-COPY --from=builder /out/service.linux /app/service.linux
-RUN mkdir -p /configs
-COPY configs/config.yaml /configs/config.yaml
-
-__COPY_ENV_LINE__
-__EXPOSE_LINE__
-ENTRYPOINT ["/app/service.linux","-conf","/configs"]
-DOCKERFILE
-
-          # Подставим переменные в шаблон
-          sed -i \
-            -e "s|__GO_VERSION__|${{ inputs.go_version }}|g" \
-            -e "s|__GO_BUILD_TARGET__|${{ inputs.go_build_target }}|g" \
-            -e "s|__RUNTIME_IMAGE__|${{ inputs.runtime_image }}|g" \
-            -e "s|__COPY_ENV_LINE__|${COPY_ENV_LINE}|g" \
-            -e "s|__EXPOSE_LINE__|${EXPOSE_LINE}|g" \
-            "${GEN_DOCKERFILE}"
-
-          echo "dockerfile=${GEN_DOCKERFILE}" >> "$GITHUB_OUTPUT"
+          echo "dockerfile=$GEN_DF" >> "$GITHUB_OUTPUT"
 
       - name: Sanity check
         run: |
