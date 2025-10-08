@@ -57,6 +57,9 @@ jobs:
       CONFIG_FILE: ${{ inputs.config_file }}
       BIN_FILE:    ${{ inputs.bin_file }}
 
+      GOMODCACHE:  ${{ github.workspace }}/.gomodcache
+      GOCACHE:     ${{ github.workspace }}/.gocache
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -65,22 +68,12 @@ jobs:
           submodules: recursive
           ref: ${{ github.sha }}
 
-      - name: Setup Go
+      - name: Setup Go (with cache)
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
           cache-dependency-path: ${{ inputs.working_dir }}/go.sum
-
-      - name: Cache Go build (GOCACHE) and modules (GOMODCACHE)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ hashFiles(format('{0}/go.sum', inputs.working_dir)) }}
-          restore-keys: |
-            ${{ runner.os }}-go-${{ env.GO_VERSION }}-
 
       - name: Install yq
         run: |
@@ -102,7 +95,6 @@ jobs:
           else RAW_VER="v0.0.0"; fi
           if [[ "$RAW_VER" =~ ^v(.+)$ ]]; then TAG="${BASH_REMATCH[1]}"; else TAG="$RAW_VER"; fi
           [ -n "$TAG" ] || TAG="0.0.0-${GITHUB_SHA::7}"
-
           IMAGE="${REGISTRY}/${NAME}:${TAG}"
           echo "name=$NAME"   >> "$GITHUB_OUTPUT"
           echo "version=$TAG" >> "$GITHUB_OUTPUT"
@@ -113,10 +105,11 @@ jobs:
         run: go test ./...
 
       - name: Build Linux binary
-        if: ${{ !inputs.run_tests }} # test
+        if: ${{ !inputs.run_tests }}
         env:
           CGO_ENABLED: "0"
         run: |
+          # go увидит GOMODCACHE и GOCACHE из env
           GOOS=linux GOARCH=amd64 \
           go build -trimpath -buildvcs=false -ldflags="-s -w" \
             -o "${BIN_FILE}" ./cmd/service
@@ -134,7 +127,6 @@ jobs:
           : > .env
           if [ -n "${ENV_FILE:-}" ]; then printf '%s\n' "$ENV_FILE" > .env; fi
 
-     # Sanity check
       - name: Sanity check
         if: ${{ !inputs.run_tests }}
         run: |
@@ -155,14 +147,12 @@ jobs:
           username: ${{ secrets.REGISTRY_LOGIN }}
           password: ${{ secrets.REGISTRY_PASS }}
 
-      # Build & Push image (with cache)
       - name: Build & Push image (with cache)
         if: ${{ inputs.build_image && !inputs.run_tests }}
         uses: docker/build-push-action@v6
         with:
           context: ${{ format('{0}/{1}', github.workspace, inputs.context) }}
           file:    ${{ format('{0}/{1}', github.workspace, inputs.dockerfile) }}
-      
           build-args: BIN_FILE=${{ env.BIN_FILE }}
           tags:       ${{ steps.meta.outputs.image }}
           push:       true
