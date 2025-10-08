@@ -3,56 +3,30 @@ name: Org Build & Push
 on:
   workflow_call:
     inputs:
-      registry:
-        type: string
-        required: true
-      go_version:
-        type: string
-        default: "1.25.0"
-      working_dir:
-        type: string
-        default: "./service"
-      context:
-        type: string
-        default: "./service"
-      config_file:
-        type: string
-        default: "configs/config.yaml"
+      registry:            { type: string, required: true }
+      go_version:          { type: string,  default: "1.25.0" }
+      working_dir:         { type: string,  default: "./service" }
+      context:             { type: string,  default: "./service" }
+      config_file:         { type: string,  default: "configs/config.yaml" }
 
-      expose_ports:
-        description: "Ports: '8134 8135' или '8134,8135'"
-        type: string
-        default: "8134 8135"
-      go_build_target:
-        description: "Go-package to build"
-        type: string
-        default: "./cmd/service"
-      copy_env_into_image:
-        description: "Включать .env внутрь образа (небезопасно)"
-        type: boolean
-        default: false
-      runtime_image:
-        description: "Runtime image"
-        type: string
-        default: "gcr.io/distroless/static:nonroot"
-      entrypoint_args:
-        description: "Аргументы для бинаря"
-        type: string
-        default: "-conf /configs"
+      # Dockerfile template inputs
+      expose_ports:        { type: string,  default: "8134 8135" }
+      go_build_target:     { type: string,  default: "./cmd/service" }
+      copy_env_into_image: { type: boolean, default: false }
+      runtime_image:       { type: string,  default: "gcr.io/distroless/static:nonroot" }
+      entrypoint_args:     { type: string,  default: "-conf /configs" }
 
-      build_image:
-        type: boolean
-        default: true
-      run_tests:
-        type: boolean
-        default: false
+      # Build behavior
+      build_image:         { type: boolean, default: true }
+      run_tests:           { type: boolean, default: false }
+
+      # Кастомизация кеша (опционально)
+      cache_scope:         { type: string,  default: "org-go" }
+
     secrets:
-      REGISTRY_LOGIN:
-        required: true
-      REGISTRY_PASS:
-        required: true
-      ENV_FILE:
-        required: false
+      REGISTRY_LOGIN: { required: true }
+      REGISTRY_PASS:  { required: true }
+      ENV_FILE:       { required: false }
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -61,15 +35,14 @@ concurrency:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    permissions: { contents: read }
     defaults:
       run:
         working-directory: ${{ inputs.working_dir }}
 
     env:
-      REGISTRY:    ${{ inputs.registry }}
-      CONFIG_FILE: ${{ inputs.config_file }}
+      REGISTRY:     ${{ inputs.registry }}
+      CONFIG_FILE:  ${{ inputs.config_file }}
 
     steps:
       - name: Checkout
@@ -81,8 +54,7 @@ jobs:
 
       - name: Install yq
         run: |
-          sudo wget -qO /usr/local/bin/yq \
-            https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
 
       - name: Derive app name and version
@@ -104,36 +76,32 @@ jobs:
           echo "version=$TAG" >> "$GITHUB_OUTPUT"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-      # (опционально) тесты
-      - name: (Optional) Setup Go for tests
+      # Optional tests outside Docker
+      - name: Setup Go (for tests)
         if: ${{ inputs.run_tests }}
         uses: actions/setup-go@v5
-        with:
-          go-version: ${{ inputs.go_version }}
-      - name: (Optional) Run tests
+        with: { go-version: ${{ inputs.go_version }} }
+
+      - name: Run tests
         if: ${{ inputs.run_tests }}
         run: go test ./...
 
-      # .env генерим только если реально хотим печь в образ
-      - name: Create .env from secrets (if baked)
+      # Only bake .env if explicitly requested
+      - name: Create .env from secrets
         if: ${{ inputs.copy_env_into_image }}
-        env:
-          ENV_FILE: ${{ secrets.ENV_FILE }}
+        env: { ENV_FILE: ${{ secrets.ENV_FILE }} }
         shell: bash
         run: |
           : > .env
           if [ -n "${ENV_FILE:-}" ]; then printf '%s\n' "$ENV_FILE" > .env; fi
 
-      - name: Generate Dockerfile (templated, no sed)
+      - name: Generate Dockerfile (templated)
         id: gen
         shell: bash
         run: |
           set -euo pipefail
           GEN_DF="${RUNNER_TEMP}/Dockerfile.gen"
-
-          # normalize ports
           PORTS="$(echo "${{ inputs.expose_ports }}" | tr ',' ' ' | xargs || true)"
-
           {
             echo "# syntax=docker/dockerfile:1.7"
             echo
@@ -159,22 +127,15 @@ jobs:
             if [ -n "$PORTS" ]; then
               echo "EXPOSE $PORTS"
             fi
-            # ENTRYPOINT + CMD раздельно, чтобы можно было менять cmd_args при запуске
             echo "ENTRYPOINT [\"/app/service.linux\"]"
-            # Преобразуем строку аргументов в массив JSON безопасно:
-            # здесь оставим одной строкой – Kubernetes/Compose всё равно могут переопределить CMD.
             printf 'CMD [%s]\n' "$(jq -Rn --arg s '${{ inputs.entrypoint_args }}' '($s|split(" "))|map(@json)|join(",")')"
           } > "$GEN_DF"
-
           echo "dockerfile=$GEN_DF" >> "$GITHUB_OUTPUT"
 
       - name: Sanity check
-        run: |
-          set -euo pipefail
-          test -f "${{ steps.gen.outputs.dockerfile }}" || { echo "Generated Dockerfile not found"; exit 1; }
-          ls -la
+        run: test -f "${{ steps.gen.outputs.dockerfile }}"
 
-      - name: Set up Docker Buildx
+      - name: Setup Docker Buildx
         if: ${{ inputs.build_image }}
         uses: docker/setup-buildx-action@v3
 
@@ -186,16 +147,26 @@ jobs:
           username: ${{ secrets.REGISTRY_LOGIN }}
           password: ${{ secrets.REGISTRY_PASS }}
 
-      - name: Build & Push image (BuildKit cache)
+      - name: Build & Push image (fast caches)
         if: ${{ inputs.build_image }}
         uses: docker/build-push-action@v6
         with:
-          context: ${{ format('{0}/{1}', github.workspace, inputs.context) }}
-          file:    ${{ steps.gen.outputs.dockerfile }}
-          tags:       ${{ steps.meta.outputs.image }}
-          push:       true
-          cache-from: type=gha
-          cache-to:   type=gha,mode=max
+          context:      ${{ format('{0}/{1}', github.workspace, inputs.context) }}
+          file:         ${{ steps.gen.outputs.dockerfile }}
+          tags:         ${{ steps.meta.outputs.image }}
+          push:         true
+
+          # ---- Caching strategy (registry first, GHA as fallback) ----
+          cache-from: |
+            type=registry,ref=${{ steps.meta.outputs.image }}-cache
+            type=gha,scope=${{ inputs.cache_scope }}
+          cache-to: |
+            type=registry,ref=${{ steps.meta.outputs.image }}-cache,mode=max
+            type=gha,mode=max,scope=${{ inputs.cache_scope }}
+
+          # ---- Turn off extra attestations to save time ----
+          provenance: false
+          sbom: false
 
       - name: Summary
         run: |
