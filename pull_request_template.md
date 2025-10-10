@@ -1,21 +1,27 @@
-### Descripción
-Descripción clara y concisa de los cambios realizados.
+## Descripción
+<!-- Una frase sobre qué hace este PR. -->
 
-### Tipo de cambio
-- [ ] Bugfix (cambio que corrige un error)
-- [ ] New Feature (cambio que añade una funcionalidad)
-- [ ] Mejora (cambio que mejora una funcionalidad existente sin añadir una nueva)
-- [ ] Refactorización (cambio en el código que no afecta la funcionalidad)
-- [ ] Documentación (añadir o mejorar la documentación)
+## Tipo de cambio
+- [ ] Bugfix
+- [ ] Nueva funcionalidad
+- [ ] Mejora
+- [ ] Refactor
+- [ ] Documentación
 
-### Cómo se ha probado
-Describe cómo has probado estos cambios. Añade los pasos para reproducir el problema y las pruebas que realizaste para confirmar que se ha resuelto o implementado correctamente.
+## Pruebas
+<!-- Pasos claros para validar el cambio. Incluye comandos si aplica. -->
+1.
+2.
+3.
 
-### Capturas de pantalla (si aplica)
-Si tus cambios afectan la interfaz de usuario, incluye capturas de pantalla.
+## Impacto / Riesgos (opcional)
+<!-- ¿Rompe algo? ¿Afecta a usuarios, rendimiento, seguridad? -->
 
-### Checklist:
-- [ ] He revisado el código
-- [ ] He realizado pruebas locales
-- [ ] La documentación ha sido actualizada (si aplica)
-- [ ] Los cambios son compatibles con la rama principal
+## Capturas (opcional)
+<!-- Arrastra imágenes si hay cambios de UI. -->
+
+## Checklist
+- [ ] Código revisado por mí
+- [ ] Pruebas locales realizadas
+- [ ] Docs actualizadas (si aplica)
+- [ ] Compatible con `main` (sin cambios rompientes)
