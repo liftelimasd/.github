@@ -8,7 +8,7 @@
 - [ ] Refactor
 - [ ] Documentación
 
-## Pruebas
+## Cómo probar (opcional)
 <!-- Pasos claros para validar el cambio. Incluye comandos si aplica. -->
 1.
 2.
