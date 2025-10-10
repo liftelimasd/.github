@@ -1,3 +1,5 @@
+<img width="500" height="145" alt="image" src="https://github.com/user-attachments/assets/a0df626d-e07e-470c-926a-0123908e3c8e" />
+
 # Liftel Comunicaciones S.L.
 
 **Soluciones inteligentes de comunicación y conectividad para el sector del ascensor.**
