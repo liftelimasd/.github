@@ -24,7 +24,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # --- Быстрый путь: ничего не делаем, только короткий summary ---
   fast-skip:
     name: fast-skip
     if: ${{ !inputs.run_tests && !inputs.build_smoke }}
@@ -72,7 +71,7 @@ jobs:
           cache-dependency-path: ${{ inputs.working_dir }}/go.sum
 
       - name: Ensure jq (for summary parsing)
-        if: ${{ inputs.run_tests }}   # нужен только для парсинга JSON тестов
+        if: ${{ inputs.run_tests }}  
         run: sudo apt-get update -y && sudo apt-get install -y jq
 
       - name: Go mod download
