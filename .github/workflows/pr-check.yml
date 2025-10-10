@@ -10,11 +10,7 @@ on:
         type: string
         default: "./service"
       run_tests:
-        description: "Execute go test ./... ?"
-        type: boolean
-        default: true
-      build_smoke:
-        description: "Do a smoke build of the binary?"
+        description: "Run tests and smoke build?"
         type: boolean
         default: true
     secrets: {}
@@ -26,7 +22,7 @@ concurrency:
 jobs:
   fast-skip:
     name: fast-skip
-    if: ${{ !inputs.run_tests && !inputs.build_smoke }}
+    if: ${{ !inputs.run_tests }}
     runs-on: ubuntu-latest
     steps:
       - name: Summary (skipped)
@@ -44,10 +40,9 @@ jobs:
           echo "### Tests ✅" >> "$GITHUB_STEP_SUMMARY"
           echo "- Skipped by configuration" >> "$GITHUB_STEP_SUMMARY"
 
-  # --- Полный путь: делаем сборку/тесты, если они нужны ---
   pr-check:
     name: pr-check
-    if: ${{ inputs.run_tests || inputs.build_smoke }}
+    if: ${{ inputs.run_tests }}
     runs-on: ubuntu-latest
 
     defaults:
@@ -63,7 +58,6 @@ jobs:
           submodules: recursive
 
       - name: Setup Go (with cache)
-        if: ${{ inputs.run_tests || inputs.build_smoke }}
         uses: actions/setup-go@v5
         with:
           go-version: ${{ inputs.go_version }}
@@ -71,15 +65,12 @@ jobs:
           cache-dependency-path: ${{ inputs.working_dir }}/go.sum
 
       - name: Ensure jq (for summary parsing)
-        if: ${{ inputs.run_tests }}  
         run: sudo apt-get update -y && sudo apt-get install -y jq
 
       - name: Go mod download
-        if: ${{ inputs.run_tests || inputs.build_smoke }}
         run: go mod download
 
       - name: Build (smoke)
-        if: ${{ inputs.build_smoke }}
         env:
           CGO_ENABLED: "0"
         run: |
@@ -89,7 +80,6 @@ jobs:
 
       - name: Unit tests (JSON)
         id: tests
-        if: ${{ inputs.run_tests }}
         run: |
           set -euo pipefail
           OUT="$RUNNER_TEMP/go-test.json"
@@ -115,10 +105,6 @@ jobs:
           echo "tested_pkgs=$TESTED_PKGS" >> "$GITHUB_OUTPUT"
           echo "report=$OUT"              >> "$GITHUB_OUTPUT"
 
-      - name: Unit tests (skipped)
-        if: ${{ !inputs.run_tests }}
-        run: echo "Tests skipped by configuration — OK ✅"
-
       - name: Summary
         if: always()
         run: |
@@ -138,31 +124,26 @@ jobs:
             echo "- Binary: \`service.linux\`" >> "$GITHUB_STEP_SUMMARY"
             echo "- Size: \`${SIZE_HUMAN}\`"   >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-          elif [ "${{ inputs.build_smoke }}" = "true" ]; then
+          else
             echo "### Build (smoke)" >> "$GITHUB_STEP_SUMMARY"
             echo "- Binary: not found ❌" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          if [ "${{ inputs.run_tests }}" = "true" ]; then
-            PASSED="${{ steps.tests.outputs.passed || '0' }}"
-            FAILED="${{ steps.tests.outputs.failed || '0' }}"
-            SKIPPED="${{ steps.tests.outputs.skipped || '0' }}"
-            ELAPSED="${{ steps.tests.outputs.elapsed || '0' }}"
-            PKGS="${{ steps.tests.outputs.tested_pkgs || '0' }}"
+          PASSED="${{ steps.tests.outputs.passed || '0' }}"
+          FAILED="${{ steps.tests.outputs.failed || '0' }}"
+          SKIPPED="${{ steps.tests.outputs.skipped || '0' }}"
+          ELAPSED="${{ steps.tests.outputs.elapsed || '0' }}"
+          PKGS="${{ steps.tests.outputs.tested_pkgs || '0' }}"
 
-            STATUS_EMOJI="✅"
-            [ "$FAILED" != "0" ] && STATUS_EMOJI="❌"
+          STATUS_EMOJI="✅"
+          [ "$FAILED" != "0" ] && STATUS_EMOJI="❌"
 
-            printf -v ELAPSED_FMT "%.2f" "$ELAPSED"
+          printf -v ELAPSED_FMT "%.2f" "$ELAPSED"
 
-            echo "### Tests $STATUS_EMOJI" >> "$GITHUB_STEP_SUMMARY"
-            echo "- Packages: \`$PKGS\`"    >> "$GITHUB_STEP_SUMMARY"
-            echo "- Passed:   \`$PASSED\`"  >> "$GITHUB_STEP_SUMMARY"
-            echo "- Skipped:  \`$SKIPPED\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "- Failed:   \`$FAILED\`"  >> "$GITHUB_STEP_SUMMARY"
-            echo "- Elapsed:  \`${ELAPSED_FMT}s\`" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "### Tests ✅" >> "$GITHUB_STEP_SUMMARY"
-            echo "- Skipped by configuration" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          echo "### Tests $STATUS_EMOJI" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Packages: \`$PKGS\`"    >> "$GITHUB_STEP_SUMMARY"
+          echo "- Passed:   \`$PASSED\`"  >> "$GITHUB_STEP_SUMMARY"
+          echo "- Skipped:  \`$SKIPPED\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Failed:   \`$FAILED\`"  >> "$GITHUB_STEP_SUMMARY"
+          echo "- Elapsed:  \`${ELAPSED_FMT}s\`" >> "$GITHUB_STEP_SUMMARY"
