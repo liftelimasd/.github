@@ -24,8 +24,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # --- Быстрый путь: ничего не делаем, только короткий summary ---
+  fast-skip:
+    name: fast-skip
+    if: ${{ !inputs.run_tests && !inputs.build_smoke }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summary (skipped)
+        run: |
+          echo "## PR Check Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Repo: \`${{ github.repository }}\`"     >> "$GITHUB_STEP_SUMMARY"
+          echo "- PR / Ref: \`${{ github.ref }}\`"        >> "$GITHUB_STEP_SUMMARY"
+          echo "- Go: \`${{ inputs.go_version }}\`"       >> "$GITHUB_STEP_SUMMARY"
+          echo "- Working dir: \`${{ inputs.working_dir }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Build ✅" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Skipped by configuration" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Tests ✅" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Skipped by configuration" >> "$GITHUB_STEP_SUMMARY"
+
+  # --- Полный путь: делаем сборку/тесты, если они нужны ---
   pr-check:
     name: pr-check
+    if: ${{ inputs.run_tests || inputs.build_smoke }}
     runs-on: ubuntu-latest
 
     defaults:
@@ -41,6 +64,7 @@ jobs:
           submodules: recursive
 
       - name: Setup Go (with cache)
+        if: ${{ inputs.run_tests || inputs.build_smoke }}
         uses: actions/setup-go@v5
         with:
           go-version: ${{ inputs.go_version }}
@@ -48,9 +72,11 @@ jobs:
           cache-dependency-path: ${{ inputs.working_dir }}/go.sum
 
       - name: Ensure jq (for summary parsing)
+        if: ${{ inputs.run_tests }}   # нужен только для парсинга JSON тестов
         run: sudo apt-get update -y && sudo apt-get install -y jq
 
       - name: Go mod download
+        if: ${{ inputs.run_tests || inputs.build_smoke }}
         run: go mod download
 
       - name: Build (smoke)
@@ -72,7 +98,7 @@ jobs:
 
           read PASSED FAILED SKIPPED ELAPSED TESTED_PKGS <<<"$(jq -r -s '
             reduce .[] as $it (
-              {"p":0,"f":0,"s":0,"e":0,"pkgs":{}};
+              {"p":0,"f":0,"s":0,"e":0,"pkgs":{}}; 
               if   ($it.Action=="pass" and ($it.Test!=null)) then .p+=1
               elif ($it.Action=="fail" and ($it.Test!=null)) then .f+=1
               elif ($it.Action=="skip" and ($it.Test!=null)) then .s+=1
@@ -83,12 +109,12 @@ jobs:
             | [ .p, .f, .s, (.e|tostring), ( (.pkgs|keys)|length ) ] | @tsv
           ' "$OUT")"
 
-          echo "passed=$PASSED"       >> "$GITHUB_OUTPUT"
-          echo "failed=$FAILED"       >> "$GITHUB_OUTPUT"
-          echo "skipped=$SKIPPED"     >> "$GITHUB_OUTPUT"
-          echo "elapsed=$ELAPSED"     >> "$GITHUB_OUTPUT"
+          echo "passed=$PASSED"           >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED"           >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED"         >> "$GITHUB_OUTPUT"
+          echo "elapsed=$ELAPSED"         >> "$GITHUB_OUTPUT"
           echo "tested_pkgs=$TESTED_PKGS" >> "$GITHUB_OUTPUT"
-          echo "report=$OUT"          >> "$GITHUB_OUTPUT"
+          echo "report=$OUT"              >> "$GITHUB_OUTPUT"
 
       - name: Unit tests (skipped)
         if: ${{ !inputs.run_tests }}
@@ -137,11 +163,6 @@ jobs:
             echo "- Skipped:  \`$SKIPPED\`" >> "$GITHUB_STEP_SUMMARY"
             echo "- Failed:   \`$FAILED\`"  >> "$GITHUB_STEP_SUMMARY"
             echo "- Elapsed:  \`${ELAPSED_FMT}s\`" >> "$GITHUB_STEP_SUMMARY"
-
-            if [ -n "${{ steps.tests.outputs.report }}" ] && [ -f "${{ steps.tests.outputs.report }}" ]; then
-              echo "" >> "$GITHUB_STEP_SUMMARY"
-              echo "_Raw go test JSON saved on runner path:_ \`${{ steps.tests.outputs.report }}\`" >> "$GITHUB_STEP_SUMMARY"
-            fi
           else
             echo "### Tests ✅" >> "$GITHUB_STEP_SUMMARY"
             echo "- Skipped by configuration" >> "$GITHUB_STEP_SUMMARY"
