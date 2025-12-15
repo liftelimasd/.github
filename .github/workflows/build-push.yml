@@ -12,11 +12,6 @@ on:
         required: false
         default: ""
 
-      version:
-        type: string
-        required: false
-        default: ""
-
       working_dir:
         type: string
         default: "./service"
@@ -51,11 +46,11 @@ on:
 
       copy_env_into_image:
         type: string
-        default: "false" 
+        default: "false"
 
       no_cache:
         type: string
-        default: "false" 
+        default: "false"
 
     secrets:
       REGISTRY_LOGIN:
@@ -72,12 +67,13 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout
+      - name: Checkout (with tags)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
+          fetch-tags: true
 
-      - name: Resolve meta (name, version, tag)
+      - name: Resolve meta (name + tag from latest git tag ONLY)
         id: meta
         shell: bash
         run: |
@@ -89,11 +85,14 @@ jobs:
             NAME="${{ github.event.repository.name }}"
           fi
 
-          if [ -n "${{ inputs.version }}" ]; then
-            TAG="${{ inputs.version }}"
-          else
-            TAG="0.0.0-${GITHUB_SHA::7}"
+          GIT_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ -z "$GIT_TAG" ]; then
+            echo "::error ::No git tags found. Version MUST come from the latest tag. Create a tag like v0.12 and push it."
+            exit 1
           fi
+
+          # v0.12 -> 0.12 (если хочешь сохранять 'v', убери #v)
+          TAG="${GIT_TAG#v}"
 
           IMAGE="${{ inputs.registry }}/${NAME}:${TAG}"
 
@@ -180,6 +179,7 @@ jobs:
         shell: bash
         run: |
           echo "## Build & Push Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tag (from git): \`${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Image: \`${{ steps.meta.outputs.image }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Working dir: \`${{ inputs.working_dir }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Context: \`${{ inputs.context }}\`" >> "$GITHUB_STEP_SUMMARY"
