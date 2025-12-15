@@ -1,4 +1,4 @@
-name: Org Kratos Build & Push
+name: Org Build & Push
 
 on:
   workflow_call:
@@ -6,51 +6,45 @@ on:
       registry:
         type: string
         required: true
-
-      image_name:
-        type: string
-        required: false
-        default: ""
-
-      working_dir:
-        type: string
-        default: "./service"
-
-      context:
-        type: string
-        default: "./service"
-
       go_version:
         type: string
         default: "1.25.0"
-
-      go_build_target:
+      working_dir:
         type: string
-        default: "./cmd/service"
-
-      runtime_image:
+        default: "./service"
+      context:
         type: string
-        default: "gcr.io/distroless/static:nonroot"
-
-      expose_ports:
-        type: string
-        default: ""
-
+        default: "./service"
       config_file:
         type: string
         default: "configs/config.yaml"
 
+      # Dockerfile template inputs
+      expose_ports:
+        type: string
+        default: "8134 8135"
+      go_build_target:
+        type: string
+        default: "./cmd/service"
+      copy_env_into_image:
+        type: boolean
+        default: false
+      runtime_image:
+        type: string
+        default: "gcr.io/distroless/static:nonroot"
       entrypoint_args:
         type: string
         default: "-conf /configs"
 
-      copy_env_into_image:
-        type: string
-        default: "false"
+      # Build behavior
+      build_image:
+        type: boolean
+        default: true
 
-      no_cache:
+      # Cache scope (optional, for gha cache)
+      cache_scope:
         type: string
-        default: "false"
+        default: "org-go"
 
     secrets:
       REGISTRY_LOGIN:
@@ -60,65 +54,92 @@ on:
       ENV_FILE:
         required: false
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
 
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_dir }}
+
+    env:
+      REGISTRY: ${{ inputs.registry }}
+      CONFIG_FILE: ${{ inputs.config_file }}
+
     steps:
-      - name: Checkout (with tags)
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          fetch-tags: true
+          submodules: recursive
+          ref: ${{ github.sha }}
 
-      - name: Resolve meta (name + tag from latest git tag ONLY)
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Derive app name and version
         id: meta
         shell: bash
         run: |
           set -euo pipefail
+          NAME=$(yq -r '.app.name // "service"' "${CONFIG_FILE}" || echo service)
+          CFG_VER=$(yq -r '.app.version // ""' "${CONFIG_FILE}" || true)
+          GIT_VER=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          RAW_VER=""
+          if [ -n "$GIT_VER" ]; then RAW_VER="$GIT_VER";
+          elif [ -n "$CFG_VER" ]; then RAW_VER="$CFG_VER";
+          else RAW_VER="v0.0.0"; fi
+          if [[ "$RAW_VER" =~ ^v(.+)$ ]]; then TAG="${BASH_REMATCH[1]}"; else TAG="$RAW_VER"; fi
+          [ -n "$TAG" ] || TAG="0.0.0-${GITHUB_SHA::7}"
+          IMAGE="${REGISTRY}/${NAME}:${TAG}"
+          echo "name=$NAME"   >> "$GITHUB_OUTPUT"
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-          if [ -n "${{ inputs.image_name }}" ]; then
-            NAME="${{ inputs.image_name }}"
-          else
-            NAME="${{ github.event.repository.name }}"
+      - name: Create .env from secrets
+        if: ${{ inputs.copy_env_into_image }}
+        id: envfile
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ENV_FILE:-}" ]; then
+            echo "baked=false" >> "$GITHUB_OUTPUT"
+            echo "::warning ::copy_env_into_image=true, but secret ENV_FILE is empty — .env can not be seeded"
+            exit 0
           fi
 
-          GIT_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-          if [ -z "$GIT_TAG" ]; then
-            echo "::error ::No git tags found. Version MUST come from the latest tag. Create a tag like v0.12 and push it."
+          printf '%s\n' "$ENV_FILE" > .env
+
+          if [ ! -s .env ]; then
+            echo "baked=false" >> "$GITHUB_OUTPUT"
+            echo "::warning ::ENV_FILE saved, but file .env is empty — .env can not be seeded"
+            exit 0
+          fi
+
+          if [ -f .dockerignore ] && grep -E '(^|/)\.env(\s|$)' .dockerignore >/dev/null 2>&1; then
+            echo "::error ::In .dockerignore found rule, to igore .env. Delete '.env' or update '!.env' on file."
             exit 1
           fi
 
-          # v0.12 -> 0.12 (если хочешь сохранять 'v', убери #v)
-          TAG="${GIT_TAG#v}"
+          echo "baked=true" >> "$GITHUB_OUTPUT"
 
-          IMAGE="${{ inputs.registry }}/${NAME}:${TAG}"
-
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-
-      - name: Create .env (optional)
-        if: ${{ inputs.copy_env_into_image == 'true' }}
-        working-directory: ${{ inputs.working_dir }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "${{ secrets.ENV_FILE }}" ]; then
-            echo "::warning ::copy_env_into_image=true but ENV_FILE secret is empty"
-            exit 0
-          fi
-          printf '%s\n' "${{ secrets.ENV_FILE }}" > .env
-
-      - name: Generate Dockerfile
+      - name: Generate Dockerfile (templated)
         id: gen
+        if: ${{ inputs.build_image }}
         shell: bash
-        working-directory: ${{ inputs.working_dir }}
         run: |
           set -euo pipefail
-
           GEN_DF="${RUNNER_TEMP}/Dockerfile.gen"
           PORTS="$(echo "${{ inputs.expose_ports }}" | tr ',' ' ' | xargs || true)"
 
@@ -140,47 +161,88 @@ jobs:
             echo "FROM ${{ inputs.runtime_image }}"
             echo "WORKDIR /app"
             echo "COPY --from=builder /out/service.linux /app/service.linux"
-            echo "COPY ${{ inputs.config_file }} /configs/config.yaml"
-            if [ "${{ inputs.copy_env_into_image }}" = "true" ]; then
+            echo "COPY configs/config.yaml /configs/config.yaml"
+            if [ "${{ inputs.copy_env_into_image }}" = "true" ] && [ "${{ steps.envfile.outputs.baked }}" = "true" ]; then
               echo "COPY .env /app/.env"
             fi
             if [ -n "$PORTS" ]; then
               echo "EXPOSE $PORTS"
             fi
             echo "ENTRYPOINT [\"/app/service.linux\"]"
-            echo "CMD ${{ inputs.entrypoint_args }}"
+            CMD_JSON=$(jq -Rn --arg s '${{ inputs.entrypoint_args }}' '($s|split(" "))|map(@json)|join(",")')
+            echo "CMD [$CMD_JSON]"
           } >> "$GEN_DF"
 
           echo "dockerfile=$GEN_DF" >> "$GITHUB_OUTPUT"
 
+      - name: Sanity check (generated Dockerfile)
+        if: ${{ inputs.build_image }}
+        run: test -f "${{ steps.gen.outputs.dockerfile }}"
+
       - name: Setup Docker Buildx
+        if: ${{ inputs.build_image }}
         uses: docker/setup-buildx-action@v3
 
       - name: Docker login
+        if: ${{ inputs.build_image }}
         uses: docker/login-action@v3
         with:
-          registry: ${{ inputs.registry }}
+          registry: ${{ env.REGISTRY }}
           username: ${{ secrets.REGISTRY_LOGIN }}
           password: ${{ secrets.REGISTRY_PASS }}
 
-      - name: Build & Push
+      - name: Build & Push image (fast caches)
+        id: buildpush
+        if: ${{ inputs.build_image }}
         uses: docker/build-push-action@v6
         with:
           context: ${{ format('{0}/{1}', github.workspace, inputs.context) }}
           file: ${{ steps.gen.outputs.dockerfile }}
           tags: ${{ steps.meta.outputs.image }}
-          push: "true"
-          no-cache: ${{ inputs.no_cache }}
-          provenance: "false"
-          sbom: "false"
+          push: true
+
+          cache-from: |
+            type=registry,ref=${{ steps.meta.outputs.image }}-cache
+            type=gha,scope=${{ inputs.cache_scope }}
+          cache-to: |
+            type=registry,ref=${{ steps.meta.outputs.image }}-cache,mode=max
+            type=gha,mode=max,scope=${{ inputs.cache_scope }}
+
+          provenance: false
+          sbom: false
 
       - name: Summary
-        if: ${{ always() }}
+        if: always()
         shell: bash
         run: |
+          set -euo pipefail
           echo "## Build & Push Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Tag (from git): \`${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Image: \`${{ steps.meta.outputs.image }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Working dir: \`${{ inputs.working_dir }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Context: \`${{ inputs.context }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- no_cache: \`${{ inputs.no_cache }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Repo: \`${{ github.repository }}\`"               >> "$GITHUB_STEP_SUMMARY"
+          echo "- Ref: \`${{ github.ref }}\`"                      >> "$GITHUB_STEP_SUMMARY"
+          echo "- Go: \`${{ inputs.go_version }}\`"                >> "$GITHUB_STEP_SUMMARY"
+          echo "- Working dir: \`${{ inputs.working_dir }}\`"      >> "$GITHUB_STEP_SUMMARY"
+          echo "- Runtime image: \`${{ inputs.runtime_image }}\`"  >> "$GITHUB_STEP_SUMMARY"
+          echo "- EXPOSE: \`${{ inputs.expose_ports }}\`"          >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${{ inputs.build_image }}" = "true" ]; then
+            if [ "${{ job.status }}" = "success" ]; then
+              echo "### Build: ✅ SUCCESS" >> "$GITHUB_STEP_SUMMARY"
+              echo "- Image: \`${{ steps.meta.outputs.image }}\`" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "### Build: ❌ FAILED" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            if [ "${{ inputs.copy_env_into_image }}" = "true" ]; then
+              if [ "${{ steps.envfile.outputs.baked }}" = "true" ]; then
+                echo "- .env: baked into image" >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "- .env: not baked (empty or missing secret)" >> "$GITHUB_STEP_SUMMARY"
+              fi
+            else
+              echo "- .env: not baked (copy_env_into_image=false)" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "### Build: ⏭️ SKIPPED" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Reason: \`build_image=false\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
