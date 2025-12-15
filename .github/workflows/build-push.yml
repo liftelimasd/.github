@@ -20,6 +20,7 @@ on:
       working_dir:
         type: string
         default: "./service"
+
       context:
         type: string
         default: "./service"
@@ -27,6 +28,7 @@ on:
       go_version:
         type: string
         default: "1.25.0"
+
       go_build_target:
         type: string
         default: "./cmd/service"
@@ -37,7 +39,7 @@ on:
 
       expose_ports:
         type: string
-        default: "" # пример: "8134 8135"
+        default: ""
 
       config_file:
         type: string
@@ -48,12 +50,12 @@ on:
         default: "-conf /configs"
 
       copy_env_into_image:
-        type: boolean
-        default: false
+        type: string
+        default: "false" 
 
       no_cache:
-        type: boolean
-        default: false
+        type: string
+        default: "false" 
 
     secrets:
       REGISTRY_LOGIN:
@@ -81,14 +83,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          # image_name: input -> repo name
           if [ -n "${{ inputs.image_name }}" ]; then
             NAME="${{ inputs.image_name }}"
           else
             NAME="${{ github.event.repository.name }}"
           fi
 
-          # version: input -> short sha
           if [ -n "${{ inputs.version }}" ]; then
             TAG="${{ inputs.version }}"
           else
@@ -102,7 +102,7 @@ jobs:
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
       - name: Create .env (optional)
-        if: ${{ inputs.copy_env_into_image }}
+        if: ${{ inputs.copy_env_into_image == 'true' }}
         working-directory: ${{ inputs.working_dir }}
         shell: bash
         run: |
@@ -113,22 +113,16 @@ jobs:
           fi
           printf '%s\n' "${{ secrets.ENV_FILE }}" > .env
 
-      - name: Generate Dockerfile (fast, no external caches)
+      - name: Generate Dockerfile
         id: gen
         shell: bash
+        working-directory: ${{ inputs.working_dir }}
         run: |
           set -euo pipefail
 
           GEN_DF="${RUNNER_TEMP}/Dockerfile.gen"
           PORTS="$(echo "${{ inputs.expose_ports }}" | tr ',' ' ' | xargs || true)"
 
-          # entrypoint args -> JSON array (без jq)
-          CMD_JSON="$(python3 - <<'PY'
-import os, shlex, json
-args = shlex.split(os.environ.get("ENTRYPOINT_ARGS",""))
-print(json.dumps(args))
-PY
-)"
           echo "# syntax=docker/dockerfile:1.7" > "$GEN_DF"
           {
             echo
@@ -155,12 +149,10 @@ PY
               echo "EXPOSE $PORTS"
             fi
             echo "ENTRYPOINT [\"/app/service.linux\"]"
-            echo "CMD ${CMD_JSON}"
+            echo "CMD ${{ inputs.entrypoint_args }}"
           } >> "$GEN_DF"
 
           echo "dockerfile=$GEN_DF" >> "$GITHUB_OUTPUT"
-        env:
-          ENTRYPOINT_ARGS: ${{ inputs.entrypoint_args }}
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -172,19 +164,20 @@ PY
           username: ${{ secrets.REGISTRY_LOGIN }}
           password: ${{ secrets.REGISTRY_PASS }}
 
-      - name: Build & Push (no cache save)
+      - name: Build & Push
         uses: docker/build-push-action@v6
         with:
           context: ${{ format('{0}/{1}', github.workspace, inputs.context) }}
           file: ${{ steps.gen.outputs.dockerfile }}
           tags: ${{ steps.meta.outputs.image }}
-          push: true
+          push: "true"
           no-cache: ${{ inputs.no_cache }}
-          provenance: false
-          sbom: false
+          provenance: "false"
+          sbom: "false"
 
       - name: Summary
-        if: always()
+        if: ${{ always() }}
+        shell: bash
         run: |
           echo "## Build & Push Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "- Image: \`${{ steps.meta.outputs.image }}\`" >> "$GITHUB_STEP_SUMMARY"
