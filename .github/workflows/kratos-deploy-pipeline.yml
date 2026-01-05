@@ -1,4 +1,4 @@
-# FILE: .github/workflows/kratos-deploy-pipeline.yml 
+# FILE: .github/workflows/kratos-deploy-pipeline.yml
 name: Kratos Reusable Pipeline
 
 on:
@@ -7,11 +7,18 @@ on:
       version:
         required: false
         type: string
+      copy_env:
+        description: 'Copy .env from secrets into image?'
+        required: false
+        type: boolean
+        default: true
     secrets:
       REGISTRY_LOGIN:
         required: true
       REGISTRY_PASS:
         required: true
+      ENV_FILE:
+        required: false
 
 jobs:
   build-and-deploy:
@@ -57,6 +64,20 @@ jobs:
           echo "image=${IMAGE}" >> $GITHUB_OUTPUT
           echo "registry=${REGISTRY}" >> $GITHUB_OUTPUT
 
+      - name: Create .env from secrets
+        if: ${{ inputs.copy_env }}
+        id: envfile
+        env:
+          SECRET_ENV: ${{ secrets.ENV_FILE }}
+        run: |
+          if [ -z "$SECRET_ENV" ]; then
+            echo "Skipping .env creation (secret is empty)"
+            echo "baked=false" >> $GITHUB_OUTPUT
+          else
+            echo "$SECRET_ENV" > .env
+            echo "baked=true" >> $GITHUB_OUTPUT
+          fi
+
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -80,6 +101,15 @@ jobs:
           WORKDIR /app
           COPY --from=builder /app/service .
           COPY service/configs/config.yaml /configs/config.yaml
+          EOF
+          
+          # Conditionally add COPY .env
+          if [ "${{ steps.envfile.outputs.baked }}" == "true" ]; then
+             echo "COPY .env /app/.env" >> Dockerfile
+          fi
+
+          # Finish Dockerfile
+          cat <<EOF >> Dockerfile
           EXPOSE ${{ steps.info.outputs.ports }}
           ENTRYPOINT ["/app/service"]
           CMD ["-conf", "/configs"]
@@ -104,6 +134,13 @@ jobs:
           echo "| **Version** | ${{ steps.info.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Image** | \`${{ steps.info.outputs.image }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Ports** | ${{ steps.info.outputs.ports }} |" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.envfile.outputs.baked }}" == "true" ]; then
+             echo "| **.env** | ✅ Baked |" >> $GITHUB_STEP_SUMMARY
+          else
+             echo "| **.env** | ❌ Skipped |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
           echo "" >> $GITHUB_STEP_SUMMARY
           
           if [ "${{ job.status }}" == "success" ]; then
