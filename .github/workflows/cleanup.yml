@@ -1,59 +1,55 @@
-name: Cleanup Workflow Runs
+name: Global Org Cleanup
 
 on:
   schedule:
     - cron: '0 0 * * *'
   workflow_dispatch:
 
-permissions:
-  actions: write
-  contents: read
-
 jobs:
-  cleanup:
+  cleanup-all-repos:
     runs-on: ubuntu-latest
     steps:
-      - name: Delete Runs & Generate Summary
+      - name: Clean All Repositories
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.ORG_CLEANUP_TOKEN }} 
+          ORG_NAME: "liftelimasd"
           KEEP_MIN: 3
         run: |
-          REPO="${{ github.repository }}"
-          echo "Fetching workflows for $REPO..."
+          echo "Fetching repositories for organization $ORG_NAME..."
           
-          # Get all workflow IDs
-          WORKFLOWS=$(gh api "repos/$REPO/actions/workflows" -q '.workflows[].id')
-          TOTAL_DELETED=0
+          # Получаем список всех репозиториев организации
+          REPOS=$(gh api "orgs/$ORG_NAME/repos" --paginate -q '.[].full_name')
           
-          for WID in $WORKFLOWS; do
-             WNAME=$(gh api "repos/$REPO/actions/workflows/$WID" -q '.name')
-             echo "Processing workflow: $WNAME ($WID)"
-             
-             # Get all runs for this workflow, sorted by creation (newest first by default)
-             # We fetch ALL runs to ensure we clean everything old
-             RUNS=$(gh api "repos/$REPO/actions/workflows/$WID/runs?per_page=100" --paginate -q '.workflow_runs[].id')
-             
-             COUNT=0
-             for RID in $RUNS; do
-               COUNT=$((COUNT+1))
-               if [ "$COUNT" -gt "$KEEP_MIN" ]; then
-                 echo "  Deleting run $RID..."
-                 if ! gh api "repos/$REPO/actions/runs/$RID" -X DELETE; then
-                    echo "::error::Failed to delete run $RID. Check permissions!"
-                 else
-                    TOTAL_DELETED=$((TOTAL_DELETED+1))
+          TOTAL_DELETED_ALL=0
+          
+          for REPO in $REPOS; do
+            echo "---------------------------------------------------"
+            echo "Checking repository: $REPO"
+            
+            # Проверяем, есть ли там воркфлоу
+            # Игнорируем ошибки (если actions выключены в репо)
+            WORKFLOWS=$(gh api "repos/$REPO/actions/workflows" -q '.workflows[].id' 2>/dev/null || echo "")
+            
+            if [ -z "$WORKFLOWS" ]; then
+              echo "  No workflows found or access denied."
+              continue
+            fi
+            
+            for WID in $WORKFLOWS; do
+               # Получаем запуски
+               RUNS=$(gh api "repos/$REPO/actions/workflows/$WID/runs?per_page=100" --paginate -q '.workflow_runs[].id')
+               
+               COUNT=0
+               for RID in $RUNS; do
+                 COUNT=$((COUNT+1))
+                 if [ "$COUNT" -gt "$KEEP_MIN" ]; then
+                   echo "  Deleting run $RID from $REPO..."
+                   gh api "repos/$REPO/actions/runs/$RID" -X DELETE >/dev/null 2>&1
+                   TOTAL_DELETED_ALL=$((TOTAL_DELETED_ALL+1))
                  fi
-               fi
-             done
+               done
+            done
           done
           
-          echo "### 🧹 Cleanup Summary" >> $GITHUB_STEP_SUMMARY
-          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "| :--- | :--- |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Deleted Runs** | $TOTAL_DELETED |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Retained per Workflow** | $KEEP_MIN |" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "$TOTAL_DELETED" -eq 0 ]; then
-             echo "" >> $GITHUB_STEP_SUMMARY
-             echo "✨ *Everything is already clean!*" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "### 🧹 Global Cleanup Summary" >> $GITHUB_STEP_SUMMARY
+          echo "Total runs deleted across organization: **$TOTAL_DELETED_ALL**" >> $GITHUB_STEP_SUMMARY
