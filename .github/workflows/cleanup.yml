@@ -18,8 +18,7 @@ jobs:
             exit 1
           fi
           
-          # Explicitly login to ensure token is picked up
-          echo "$GH_TOKEN" | gh auth login --with-token
+          # Explicitly login removed as GH_TOKEN env var is sufficient
           
           echo "Fetching repositories for organization $ORG_NAME..."
           
