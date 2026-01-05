@@ -34,7 +34,8 @@ jobs:
         id: info
         run: |
           # 1. Parse Service Config
-          SERVICE_NAME=$(grep 'name:' service/configs/config.yaml | awk '{print $2}')
+          # Extract name from app: section (always in first few lines)
+          SERVICE_NAME=$(grep -A 3 '^app:' service/configs/config.yaml | grep '^  name:' | awk '{print $2}')
           [ -z "$SERVICE_NAME" ] && SERVICE_NAME="service"
           
           PORTS=$(grep 'addr:' service/configs/config.yaml | awk -F: '{print $NF}' | tr '\n' ' ' | xargs)
