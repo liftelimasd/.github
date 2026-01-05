@@ -11,7 +11,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.ORG_CLEANUP_TOKEN_RAUL }} 
           ORG_NAME: "liftelimasd"
-          KEEP_MIN: 3
+          KEEP_TOTAL: 3
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "::error::GH_TOKEN is empty. Check your secrets!"
@@ -27,40 +27,33 @@ jobs:
             echo "---------------------------------------------------"
             echo "Checking repository: $REPO"
             
-            # Fetch ALL runs for the repo
-            # Output format: workflow_id run_id
-            RUNS_DATA=$(gh api "repos/$REPO/actions/runs?per_page=100" --paginate -q '.workflow_runs[] | "\(.workflow_id) \(.id)"' 2>/dev/null || echo "")
+            # Fetch ALL runs for the repo, sorted by created_at desc (default API behavior)
+            # We just need the list of IDs in order
+            RUN_IDS=$(gh api "repos/$REPO/actions/runs?per_page=100" --paginate -q '.workflow_runs[].id' 2>/dev/null || echo "")
             
-            if [ -z "$RUNS_DATA" ]; then
+            if [ -z "$RUN_IDS" ]; then
                echo "  No runs found or access denied."
                continue
             fi
             
-            # Get unique workflow IDs from the data
-            WIDS=$(echo "$RUNS_DATA" | awk '{print $1}' | sort -u)
+            COUNT=0
+            DELETED_REPO=0
             
-            for WID in $WIDS; do
-               # Grep runs for this WID (they come sorted by time desc from API usually, but let's trust API order)
-               # We just extract the IDs for this WID
-               RUN_IDS=$(echo "$RUNS_DATA" | awk -v w="$WID" '$1 == w {print $2}')
-               
-               COUNT=0
-               for RID in $RUN_IDS; do
-                 COUNT=$((COUNT+1))
-                 if [ "$COUNT" -gt "$KEEP_MIN" ]; then
-                   echo "  Deleting run $RID (Workflow $WID)..."
-                   gh api "repos/$REPO/actions/runs/$RID" -X DELETE >/dev/null 2>&1
-                   TOTAL_DELETED_ALL=$((TOTAL_DELETED_ALL+1))
-                 fi
-               done
-               
-               if [ "$COUNT" -gt "$KEEP_MIN" ]; then
-                  DELETED=$((COUNT - KEEP_MIN))
-                  echo "    Workflow $WID: Found $COUNT runs. Deleted $DELETED."
-               else
-                  echo "    Workflow $WID: Found $COUNT runs. Kept all."
-               fi
+            for RID in $RUN_IDS; do
+              COUNT=$((COUNT+1))
+              if [ "$COUNT" -gt "$KEEP_TOTAL" ]; then
+                echo "  Deleting run $RID..."
+                gh api "repos/$REPO/actions/runs/$RID" -X DELETE >/dev/null 2>&1
+                TOTAL_DELETED_ALL=$((TOTAL_DELETED_ALL+1))
+                DELETED_REPO=$((DELETED_REPO+1))
+              fi
             done
+            
+            if [ "$DELETED_REPO" -gt 0 ]; then
+               echo "  Deleted $DELETED_REPO runs. Kept top $KEEP_TOTAL."
+            else
+               echo "  Already clean (Found $COUNT runs)."
+            fi
           done
           
           echo "### 🧹 Global Cleanup Summary" >> $GITHUB_STEP_SUMMARY
