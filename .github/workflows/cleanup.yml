@@ -1,4 +1,4 @@
-name: Global Org Cleanup Workflow History
+name: Global Org Cleanup
 
 on:
   schedule:
@@ -15,6 +15,9 @@ jobs:
           ORG_NAME: "liftelimasd"
           KEEP_MIN: 3
         run: |
+          # Explicitly login to ensure token is picked up
+          echo "$GH_TOKEN" | gh auth login --with-token
+          
           echo "Fetching repositories for organization $ORG_NAME..."
           
           REPOS=$(gh api "orgs/$ORG_NAME/repos" --paginate -q '.[].full_name')
