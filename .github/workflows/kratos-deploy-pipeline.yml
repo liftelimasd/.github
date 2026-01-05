@@ -98,12 +98,22 @@ jobs:
           REGISTRY="registry.liftel.es:5000"
           IMAGE="${REGISTRY}/${SERVICE_NAME}:${CLEAN_VERSION}"
           
-          echo "version=${FINAL_VER}" >> $GITHUB_OUTPUT
-          echo "clean_version=${CLEAN_VERSION}" >> $GITHUB_OUTPUT
-          echo "timestamp=${TIME_FMT}" >> $GITHUB_OUTPUT
-          echo "ports=${PORTS}" >> $GITHUB_OUTPUT
-          echo "image=${IMAGE}" >> $GITHUB_OUTPUT
-          echo "registry=${REGISTRY}" >> $GITHUB_OUTPUT
+          # Clean and sanitize variables before writing to GITHUB_OUTPUT
+          # Remove any newlines, carriage returns, and trim whitespace
+          FINAL_VER=$(echo -n "$FINAL_VER" | tr -d '\n\r' | xargs)
+          CLEAN_VERSION=$(echo -n "$CLEAN_VERSION" | tr -d '\n\r' | xargs)
+          TIME_FMT=$(echo -n "$TIME_FMT" | tr -d '\n\r' | xargs)
+          PORTS=$(echo -n "$PORTS" | tr -d '\n\r' | xargs)
+          IMAGE=$(echo -n "$IMAGE" | tr -d '\n\r' | xargs)
+          REGISTRY=$(echo -n "$REGISTRY" | tr -d '\n\r' | xargs)
+          
+          # Write to GITHUB_OUTPUT
+          echo "version=$FINAL_VER" >> $GITHUB_OUTPUT
+          echo "clean_version=$CLEAN_VERSION" >> $GITHUB_OUTPUT
+          echo "timestamp=$TIME_FMT" >> $GITHUB_OUTPUT
+          echo "ports=$PORTS" >> $GITHUB_OUTPUT
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "registry=$REGISTRY" >> $GITHUB_OUTPUT
 
       - name: Create Git Tag
         # Only create tag if version was auto-generated (input empty) AND it doesn't exist yet
