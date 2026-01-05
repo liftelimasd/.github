@@ -2,21 +2,55 @@ name: Cleanup Workflow Runs
 
 on:
   schedule:
-    - cron: '0 0 * * *' # Run daily at midnight
-  workflow_dispatch: # Allow manual run
+    - cron: '0 0 * * *'
+  workflow_dispatch:
 
 permissions:
   actions: write
+  contents: read
 
 jobs:
-  delete-runs:
+  cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: Delete old workflow runs
-        uses: Mattraks/delete-workflow-runs@v2
-        with:
-          token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          retain_days: 0        # Delete immediately if older than limit
-          keep_minimum_runs: 3  # Always keep 3 latest runs per workflow
-
+      - name: Delete Runs & Generate Summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP_MIN: 3
+        run: |
+          REPO="${{ github.repository }}"
+          echo "Fetching workflows for $REPO..."
+          
+          # Get all workflow IDs
+          WORKFLOWS=$(gh api "repos/$REPO/actions/workflows" -q '.workflows[].id')
+          TOTAL_DELETED=0
+          
+          for WID in $WORKFLOWS; do
+             WNAME=$(gh api "repos/$REPO/actions/workflows/$WID" -q '.name')
+             echo "Processing workflow: $WNAME ($WID)"
+             
+             # Get all runs for this workflow, sorted by creation (newest first by default)
+             # We fetch ALL runs to ensure we clean everything old
+             RUNS=$(gh api "repos/$REPO/actions/workflows/$WID/runs?per_page=100" --paginate -q '.workflow_runs[].id')
+             
+             COUNT=0
+             for RID in $RUNS; do
+               COUNT=$((COUNT+1))
+               if [ "$COUNT" -gt "$KEEP_MIN" ]; then
+                 echo "  Deleting run $RID..."
+                 gh api "repos/$REPO/actions/runs/$RID" -X DELETE >/dev/null
+                 TOTAL_DELETED=$((TOTAL_DELETED+1))
+               fi
+             done
+          done
+          
+          echo "### 🧹 Cleanup Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "| :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Deleted Runs** | $TOTAL_DELETED |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Retained per Workflow** | $KEEP_MIN |" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$TOTAL_DELETED" -eq 0 ]; then
+             echo "" >> $GITHUB_STEP_SUMMARY
+             echo "✨ *Everything is already clean!*" >> $GITHUB_STEP_SUMMARY
+          fi
