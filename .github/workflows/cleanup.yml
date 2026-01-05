@@ -38,8 +38,11 @@ jobs:
                COUNT=$((COUNT+1))
                if [ "$COUNT" -gt "$KEEP_MIN" ]; then
                  echo "  Deleting run $RID..."
-                 gh api "repos/$REPO/actions/runs/$RID" -X DELETE >/dev/null
-                 TOTAL_DELETED=$((TOTAL_DELETED+1))
+                 if ! gh api "repos/$REPO/actions/runs/$RID" -X DELETE; then
+                    echo "::error::Failed to delete run $RID. Check permissions!"
+                 else
+                    TOTAL_DELETED=$((TOTAL_DELETED+1))
+                 fi
                fi
              done
           done
