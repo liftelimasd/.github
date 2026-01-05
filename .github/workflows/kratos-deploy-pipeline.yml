@@ -7,6 +7,7 @@ on:
       version:
         required: false
         type: string
+        description: "Specific version to deploy. If empty, auto-increments based on config.yaml"
       copy_env:
         description: 'Copy .env from secrets into image?'
         required: false
@@ -29,40 +30,95 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Prepare Info
+      - name: Prepare Info & Versioning
         id: info
         run: |
-          # 1. Determine Version
-          VERSION="${{ inputs.version }}"
-          if [ -z "$VERSION" ] || [ "$VERSION" == "latest" ]; then
-            git fetch --tags --force > /dev/null 2>&1
-            LATEST_TAG=$(git tag --sort=-v:refname | head -n 1)
-            if [ -z "$LATEST_TAG" ]; then
-              VERSION="v0.0.1"
-            else
-              VERSION="$LATEST_TAG"
-            fi
-          fi
-          
-          # 2. Parse Service Config
+          # 1. Parse Service Config
           SERVICE_NAME=$(grep 'name:' service/configs/config.yaml | awk '{print $2}')
           [ -z "$SERVICE_NAME" ] && SERVICE_NAME="service"
           
           PORTS=$(grep 'addr:' service/configs/config.yaml | awk -F: '{print $NF}' | tr '\n' ' ' | xargs)
           [ -z "$PORTS" ] && PORTS="3000 3001"
           
-          # 3. Clean Version & Time
-          CLEAN_VERSION="${VERSION#v}"
-          TIME_FMT=$(date +'%d-%m-%Y %H:%M')
+          CONFIG_VER=$(grep 'version:' service/configs/config.yaml | awk '{print $2}' | tr -d '"' | tr -d "'")
+          if [ -z "$CONFIG_VER" ]; then
+             echo "::error::Version not found in config.yaml"
+             exit 1
+          fi
           
+          # 2. Determine Version Logic
+          INPUT_VER="${{ inputs.version }}"
+          
+          if [ -n "$INPUT_VER" ]; then
+             # Manual override
+             FINAL_VER="$INPUT_VER"
+             echo "Using manual version: $FINAL_VER"
+          else
+             # Auto-increment logic
+             git fetch --tags --force > /dev/null 2>&1
+             
+             # Find latest tag matching config base (e.g. v2.*)
+             LAST_TAG=$(git tag -l "$CONFIG_VER.*" --sort=-v:refname | head -n 1)
+             
+             if [ -z "$LAST_TAG" ]; then
+                # First tag for this major version
+                FINAL_VER="${CONFIG_VER}.1"
+                echo "No tags found for base $CONFIG_VER. Starting with $FINAL_VER"
+             else
+                # Increment patch version
+                # Remove prefix (e.g. v2.5 -> 5)
+                PREFIX="${CONFIG_VER}."
+                LAST_NUM=${LAST_TAG#$PREFIX}
+                
+                # Fallback if parsing fails
+                if ! [[ "$LAST_NUM" =~ ^[0-9]+$ ]]; then LAST_NUM=0; fi
+                
+                NEXT_NUM=$((LAST_NUM + 1))
+                FINAL_VER="${CONFIG_VER}.${NEXT_NUM}"
+                echo "Found last tag $LAST_TAG. Incrementing to $FINAL_VER"
+             fi
+             
+             # Safety Check: Prevent accidental deployment of older major version if newer exists
+             GLOBAL_LATEST=$(git tag --sort=-v:refname | head -n 1)
+             if [ -n "$GLOBAL_LATEST" ]; then
+                 # Simple check: if global starts with v3 and config is v2 -> Error
+                 GLOBAL_MAJOR=$(echo "$GLOBAL_LATEST" | cut -d. -f1)
+                 CURRENT_MAJOR=$(echo "$CONFIG_VER" | cut -d. -f1)
+                 
+                 if [[ "$GLOBAL_MAJOR" > "$CURRENT_MAJOR" ]]; then
+                    echo "::error::Global latest tag is $GLOBAL_LATEST (newer than config $CONFIG_VER). Please update config.yaml!"
+                    exit 1
+                 fi
+             fi
+          fi
+
+          # 3. Output variables
+          CLEAN_VERSION="${FINAL_VER#v}"
+          TIME_FMT=$(date +'%d-%m-%Y %H:%M')
           REGISTRY="registry.liftel.es:5000"
           IMAGE="${REGISTRY}/${SERVICE_NAME}:${CLEAN_VERSION}"
           
-          echo "version=${CLEAN_VERSION}" >> $GITHUB_OUTPUT
+          echo "version=${FINAL_VER}" >> $GITHUB_OUTPUT
+          echo "clean_version=${CLEAN_VERSION}" >> $GITHUB_OUTPUT
           echo "timestamp=${TIME_FMT}" >> $GITHUB_OUTPUT
           echo "ports=${PORTS}" >> $GITHUB_OUTPUT
           echo "image=${IMAGE}" >> $GITHUB_OUTPUT
           echo "registry=${REGISTRY}" >> $GITHUB_OUTPUT
+
+      - name: Create Git Tag
+        # Only create tag if version was auto-generated (input empty) AND it doesn't exist yet
+        if: ${{ inputs.version == '' }}
+        run: |
+          NEW_TAG="${{ steps.info.outputs.version }}"
+          if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+             echo "Tag $NEW_TAG already exists. Skipping creation."
+          else
+             echo "Creating git tag: $NEW_TAG"
+             git config user.name "GitHub Actions"
+             git config user.email "actions@github.com"
+             git tag "$NEW_TAG"
+             git push origin "$NEW_TAG"
+          fi
 
       - name: Create .env from secrets
         if: ${{ inputs.copy_env }}
@@ -103,12 +159,10 @@ jobs:
           COPY service/configs/config.yaml /configs/config.yaml
           EOF
           
-          # Conditionally add COPY .env
           if [ "${{ steps.envfile.outputs.baked }}" == "true" ]; then
              echo "COPY .env /app/.env" >> Dockerfile
           fi
 
-          # Finish Dockerfile
           cat <<EOF >> Dockerfile
           EXPOSE ${{ steps.info.outputs.ports }}
           ENTRYPOINT ["/app/service"]
