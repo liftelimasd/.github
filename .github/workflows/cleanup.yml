@@ -18,10 +18,7 @@ jobs:
             exit 1
           fi
           
-          # Explicitly login removed as GH_TOKEN env var is sufficient
-          
           echo "Fetching repositories for organization $ORG_NAME..."
-          
           REPOS=$(gh api "orgs/$ORG_NAME/repos" --paginate -q '.[].full_name')
           
           TOTAL_DELETED_ALL=0
@@ -30,36 +27,39 @@ jobs:
             echo "---------------------------------------------------"
             echo "Checking repository: $REPO"
             
-            WORKFLOWS=$(gh api "repos/$REPO/actions/workflows" -q '.workflows[].id' 2>/dev/null || echo "")
+            # Fetch ALL runs for the repo
+            # Output format: workflow_id run_id
+            RUNS_DATA=$(gh api "repos/$REPO/actions/runs?per_page=100" --paginate -q '.workflow_runs[] | "\(.workflow_id) \(.id)"' 2>/dev/null || echo "")
             
-            if [ -z "$WORKFLOWS" ]; then
-              echo "  No workflows found or access denied."
-              continue
+            if [ -z "$RUNS_DATA" ]; then
+               echo "  No runs found or access denied."
+               continue
             fi
             
-            for WID in $WORKFLOWS; do
-               # Get all runs for this workflow
-               # Using --paginate to fetch ALL pages
-               RUNS=$(gh api "repos/$REPO/actions/workflows/$WID/runs?per_page=100" --paginate -q '.workflow_runs[].id')
-               
-               # Calculate total runs (handling empty string case)
-               if [ -z "$RUNS" ]; then
-                  RUN_COUNT=0
-               else
-                  RUN_COUNT=$(echo "$RUNS" | wc -w)
-               fi
-               
-               echo "    Workflow $WID: Found $RUN_COUNT runs (Keeping top $KEEP_MIN)"
+            # Get unique workflow IDs from the data
+            WIDS=$(echo "$RUNS_DATA" | awk '{print $1}' | sort -u)
+            
+            for WID in $WIDS; do
+               # Grep runs for this WID (they come sorted by time desc from API usually, but let's trust API order)
+               # We just extract the IDs for this WID
+               RUN_IDS=$(echo "$RUNS_DATA" | awk -v w="$WID" '$1 == w {print $2}')
                
                COUNT=0
-               for RID in $RUNS; do
+               for RID in $RUN_IDS; do
                  COUNT=$((COUNT+1))
                  if [ "$COUNT" -gt "$KEEP_MIN" ]; then
-                   echo "  Deleting run $RID from $REPO..."
+                   echo "  Deleting run $RID (Workflow $WID)..."
                    gh api "repos/$REPO/actions/runs/$RID" -X DELETE >/dev/null 2>&1
                    TOTAL_DELETED_ALL=$((TOTAL_DELETED_ALL+1))
                  fi
                done
+               
+               if [ "$COUNT" -gt "$KEEP_MIN" ]; then
+                  DELETED=$((COUNT - KEEP_MIN))
+                  echo "    Workflow $WID: Found $COUNT runs. Deleted $DELETED."
+               else
+                  echo "    Workflow $WID: Found $COUNT runs. Kept all."
+               fi
             done
           done
           
