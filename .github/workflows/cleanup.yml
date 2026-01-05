@@ -1,8 +1,6 @@
 name: Global Org Cleanup
 
 on:
-  schedule:
-    - cron: '0 0 * * *'
   workflow_dispatch:
 
 jobs:
@@ -15,6 +13,11 @@ jobs:
           ORG_NAME: "liftelimasd"
           KEEP_MIN: 3
         run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::GH_TOKEN is empty. Check your secrets!"
+            exit 1
+          fi
+          
           # Explicitly login to ensure token is picked up
           echo "$GH_TOKEN" | gh auth login --with-token
           
