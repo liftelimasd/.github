@@ -1,4 +1,4 @@
-name: Global Org Cleanup
+name: Global Org Cleanup Workflow History
 
 on:
   schedule:
@@ -11,13 +11,12 @@ jobs:
     steps:
       - name: Clean All Repositories
         env:
-          GH_TOKEN: ${{ secrets.ORG_CLEANUP_TOKEN }} 
+          GH_TOKEN: ${{ secrets.ORG_CLEANUP_TOKEN_RAUL }} 
           ORG_NAME: "liftelimasd"
           KEEP_MIN: 3
         run: |
           echo "Fetching repositories for organization $ORG_NAME..."
           
-          # Получаем список всех репозиториев организации
           REPOS=$(gh api "orgs/$ORG_NAME/repos" --paginate -q '.[].full_name')
           
           TOTAL_DELETED_ALL=0
@@ -26,8 +25,6 @@ jobs:
             echo "---------------------------------------------------"
             echo "Checking repository: $REPO"
             
-            # Проверяем, есть ли там воркфлоу
-            # Игнорируем ошибки (если actions выключены в репо)
             WORKFLOWS=$(gh api "repos/$REPO/actions/workflows" -q '.workflows[].id' 2>/dev/null || echo "")
             
             if [ -z "$WORKFLOWS" ]; then
@@ -36,7 +33,6 @@ jobs:
             fi
             
             for WID in $WORKFLOWS; do
-               # Получаем запуски
                RUNS=$(gh api "repos/$REPO/actions/workflows/$WID/runs?per_page=100" --paginate -q '.workflow_runs[].id')
                
                COUNT=0
