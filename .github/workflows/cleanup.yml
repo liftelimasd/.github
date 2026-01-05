@@ -38,7 +38,18 @@ jobs:
             fi
             
             for WID in $WORKFLOWS; do
+               # Get all runs for this workflow
+               # Using --paginate to fetch ALL pages
                RUNS=$(gh api "repos/$REPO/actions/workflows/$WID/runs?per_page=100" --paginate -q '.workflow_runs[].id')
+               
+               # Calculate total runs (handling empty string case)
+               if [ -z "$RUNS" ]; then
+                  RUN_COUNT=0
+               else
+                  RUN_COUNT=$(echo "$RUNS" | wc -w)
+               fi
+               
+               echo "    Workflow $WID: Found $RUN_COUNT runs (Keeping top $KEEP_MIN)"
                
                COUNT=0
                for RID in $RUNS; do
