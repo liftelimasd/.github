@@ -42,8 +42,9 @@ Este es el archivo que debe estar presente en cada repositorio de servicio (ej. 
     1. Ir a la pestaña **Actions** en GitHub.
     2. Seleccionar **Auto Run Deploy Pipeline - Kratos Service**.
     3. Hacer clic en **Run workflow**.
-    4. (Opcional) Escribir una versión específica (ej. `v2.0`). Si se deja vacío, usa el último tag de git.
+    4. (Opcional) Marcar o desmarcar **Include .env secrets?** (Por defecto activado).
 *   **Características:**
+    *   **Auto-Tag:** Genera automáticamente un nuevo tag de git (ej. `v2.5` -> `v2.6`) basado en `config.yaml`.
     *   No contiene lógica compleja, solo llama a `kratos-deploy-pipeline.yml`.
     *   Pasa automáticamente los secretos (`REGISTRY_LOGIN`, `REGISTRY_PASS`, `ENV_FILE`).
 
@@ -54,22 +55,23 @@ name: Auto Run Deploy Pipeline - Kratos Service
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version (leave empty for latest git tag)'
-        required: false
-        default: ''
+      copy_env:
+        description: 'Include .env secrets?'
+        required: true
+        type: boolean
+        default: true
 
 jobs:
   deploy:
+    permissions:
+      contents: write # REQUIRED for git tag creation
     uses: liftelimasd/.github/.github/workflows/kratos-deploy-pipeline.yml@main
     with:
-      version: ${{ inputs.version }}
-      copy_env: true # Optional: defaults to true inside pipeline anyway
+      copy_env: ${{ inputs.copy_env }}
     secrets:
       REGISTRY_LOGIN: ${{ secrets.REGISTRY_LOGIN }}
       REGISTRY_PASS: ${{ secrets.REGISTRY_PASS }}
       ENV_FILE: ${{ secrets.ENV_FILE }}
-
 ```
 
 
