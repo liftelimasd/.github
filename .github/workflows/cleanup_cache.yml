@@ -1,0 +1,89 @@
+name: Global Org Cache Cleanup
+
+on:
+  workflow_dispatch:
+
+jobs:
+  cleanup-all-repos-caches:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+
+    steps:
+      - name: Clean Actions Cache in All Repositories
+        env:
+          GH_TOKEN: ${{ secrets.ORG_CLEANUP_TOKEN_RAUL }}
+          ORG_NAME: "liftelimasd"
+          KEEP_TOTAL: 0   # сколько самых новых cache-entries оставить в каждом репо (0 = удалить все)
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::GH_TOKEN is empty. Check your secrets!"
+            exit 1
+          fi
+
+          echo "Fetching repositories for organization $ORG_NAME..."
+          REPOS=$(gh api "orgs/$ORG_NAME/repos" --paginate -q '.[].full_name')
+
+          TOTAL_DELETED_ALL=0
+          TOTAL_FREED_BYTES_ALL=0
+
+          for REPO in $REPOS; do
+            echo "---------------------------------------------------"
+            echo "Checking repository: $REPO"
+
+            # Собираем кэши постранично. Формат: created_at \t id \t size_in_bytes \t key
+            CACHE_LINES=$(
+              gh api "repos/$REPO/actions/caches?per_page=100" --paginate \
+                -q '.actions_caches[] | "\(.created_at)\t\(.id)\t\(.size_in_bytes)\t\(.key)"' 2>/dev/null || true
+            )
+
+            if [ -z "${CACHE_LINES:-}" ]; then
+              echo "  No caches found or access denied."
+              continue
+            fi
+
+            # Сортируем по created_at (новые сверху)
+            SORTED=$(printf "%s\n" "$CACHE_LINES" | sort -r)
+
+            COUNT=0
+            DELETED_REPO=0
+            FREED_BYTES_REPO=0
+
+            while IFS=$'\t' read -r CREATED CACHE_ID SIZE KEY; do
+              COUNT=$((COUNT+1))
+
+              if [ "$COUNT" -gt "$KEEP_TOTAL" ]; then
+                echo "  Deleting cache id=$CACHE_ID key=$KEY created_at=$CREATED size=${SIZE}B ..."
+                gh api "repos/$REPO/actions/caches/$CACHE_ID" -X DELETE >/dev/null 2>&1 || {
+                  echo "  ::warning::Failed to delete cache $CACHE_ID (maybe permissions / already gone)."
+                  continue
+                }
+
+                TOTAL_DELETED_ALL=$((TOTAL_DELETED_ALL+1))
+                DELETED_REPO=$((DELETED_REPO+1))
+
+                # SIZE может быть пустым/нечислом в редких случаях — страхуемся
+                if [[ "$SIZE" =~ ^[0-9]+$ ]]; then
+                  FREED_BYTES_REPO=$((FREED_BYTES_REPO+SIZE))
+                  TOTAL_FREED_BYTES_ALL=$((TOTAL_FREED_BYTES_ALL+SIZE))
+                fi
+              fi
+            done <<< "$SORTED"
+
+            if [ "$DELETED_REPO" -gt 0 ]; then
+              echo "  Deleted $DELETED_REPO caches. Kept top $KEEP_TOTAL."
+              echo "  Freed (approx): $FREED_BYTES_REPO bytes"
+            else
+              echo "  Already clean (Found $COUNT caches)."
+            fi
+          done
+
+          FREED_MB=$(awk "BEGIN {printf \"%.2f\", $TOTAL_FREED_BYTES_ALL/1024/1024}")
+
+          echo "### 🧹 Global Cache Cleanup Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "Total caches deleted across organization: **$TOTAL_DELETED_ALL**" >> "$GITHUB_STEP_SUMMARY"
+          echo "Approx freed space: **${FREED_MB} MB**" >> "$GITHUB_STEP_SUMMARY"
+          echo "Kept per repo: **$KEEP_TOTAL** newest cache entries" >> "$GITHUB_STEP_SUMMARY"
