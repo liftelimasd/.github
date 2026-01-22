@@ -8,20 +8,23 @@
 - [ ] Refactor
 - [ ] Documentación
 
-## Cómo probar (opcional)
+<!-- ## Cómo probar (opcional) -->
 <!-- Pasos claros para validar el cambio. Incluye comandos si aplica. -->
-1.
-2.
-3.
+<!--
+1. 
+2. 
+3. 
+-->
 
-## Impacto / Riesgos (opcional)
+<!--  ## Impacto / Riesgos (opcional) -->
 <!-- ¿Rompe algo? ¿Afecta a usuarios, rendimiento, seguridad? -->
 
-## Capturas (opcional)
+<!-- ## Capturas (opcional) -->
 <!-- Arrastra imágenes si hay cambios de UI. -->
 
-## Checklist
+<!-- ## Checklist
 - [ ] Código revisado por mí
 - [ ] Pruebas locales realizadas
 - [ ] Docs actualizadas (si aplica)
 - [ ] Compatible con `main` (sin cambios rompientes)
+-->
