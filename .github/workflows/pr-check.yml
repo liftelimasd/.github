@@ -23,7 +23,7 @@ jobs:
   fast-skip:
     name: fast-skip
     if: ${{ !inputs.run_tests }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Summary (skipped)
         run: |
@@ -43,7 +43,7 @@ jobs:
   pr-check:
     name: pr-check
     if: ${{ inputs.run_tests }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     defaults:
       run:
