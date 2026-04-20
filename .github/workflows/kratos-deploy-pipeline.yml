@@ -158,7 +158,7 @@ jobs:
       - name: Generate Dockerfile
         run: |
           cat <<EOF > Dockerfile
-          FROM golang:1.24 AS builder
+          FROM golang:1.25 AS builder
           WORKDIR /src
           COPY service/ .
           RUN go mod download
