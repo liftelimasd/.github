@@ -41,7 +41,8 @@ jobs:
           PORTS=$(grep 'addr:' service/configs/config.yaml | awk -F: '{print $NF}' | tr '\n' ' ' | xargs)
           [ -z "$PORTS" ] && PORTS="3000 3001"
           
-          CONFIG_VER=$(grep 'version:' service/configs/config.yaml | awk '{print $2}' | tr -d '"' | tr -d "'")
+          CONFIG_VER=$(grep -A 3 '^app:' service/configs/config.yaml | grep '^ *version:' | head -1 | awk '{print $2}' | tr -d '"' | tr -d "'")
+
           if [ -z "$CONFIG_VER" ]; then
              echo "::error::Version not found in config.yaml"
              exit 1
