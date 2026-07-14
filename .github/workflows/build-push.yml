@@ -92,7 +92,12 @@ jobs:
           set -euo pipefail
           NAME=$(yq -r '.app.name // "service"' "${CONFIG_FILE}" || echo service)
           CFG_VER=$(yq -r '.app.version // ""' "${CONFIG_FILE}" || true)
-          GIT_VER=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          # Si hay tags apuntando al commit actual, coger el mayor por version (no por antiguedad).
+          # Si no, retroceder al ultimo tag alcanzable, tambien ordenado por version.
+          GIT_VER=$(git tag --points-at HEAD --list 'v*' | sort -V | tail -n1)
+          if [ -z "$GIT_VER" ]; then
+            GIT_VER=$(git tag --merged HEAD --list 'v*' | sort -V | tail -n1)
+          fi
           RAW_VER=""
           if [ -n "$GIT_VER" ]; then RAW_VER="$GIT_VER";
           elif [ -n "$CFG_VER" ]; then RAW_VER="$CFG_VER";
