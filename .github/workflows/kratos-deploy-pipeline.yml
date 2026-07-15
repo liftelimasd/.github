@@ -35,6 +35,14 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-24.04
     steps:
+      - name: Validate Branch for Test Build
+        run: |
+          # Un build de testeo no puede ejecutarse sobre main.
+          if [ "${{ inputs.test_build }}" == "true" ] && [ "${{ github.ref_name }}" == "main" ]; then
+            echo "::error::Build de testeo no permitido en la rama 'main'. Selecciona otra rama."
+            exit 1
+          fi
+
       - name: Checkout Project
         uses: actions/checkout@v4
         with:
