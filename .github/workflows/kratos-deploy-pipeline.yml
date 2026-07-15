@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         description: "Specific version to deploy. If empty, auto-increments based on config.yaml"
+      test_build:
+        required: false
+        type: boolean
+        default: false
+        description: "Build de testeo: imagen <name>-test:<rama>, sin crear git tag"
       copy_env:
         description: 'Copy .env from secrets into image?'
         required: false
@@ -56,7 +61,16 @@ jobs:
           # 2. Determine Version Logic
           INPUT_VER="${{ inputs.version }}"
 
-          if [ -n "$INPUT_VER" ]; then
+          if [ "${{ inputs.test_build }}" == "true" ]; then
+             # Build de testeo: la version es el nombre de rama sanitizado
+             # (los tags de Docker no admiten '/'). Se salta el auto-increment
+             # y el safety-check de version de produccion.
+             BRANCH=$(echo "${{ github.ref_name }}" | tr '/' '-')
+             FINAL_VER="$BRANCH"
+             # Sufijo -test en el nombre para separar del repo de imagen de prod
+             SERVICE_NAME="${SERVICE_NAME}-test"
+             echo "Test build: image ${SERVICE_NAME}:${FINAL_VER}"
+          elif [ -n "$INPUT_VER" ]; then
              # Manual override
              FINAL_VER="$INPUT_VER"
              echo "Using manual version: $FINAL_VER"
@@ -123,8 +137,9 @@ jobs:
           echo "registry=$REGISTRY" >> $GITHUB_OUTPUT
 
       - name: Create Git Tag
-        # Only create tag if version was auto-generated (input empty) AND it doesn't exist yet
-        if: ${{ inputs.version == '' }}
+        # Only create tag if version was auto-generated (input empty) AND it doesn't exist yet.
+        # Los builds de testeo nunca crean tag.
+        if: ${{ inputs.version == '' && inputs.test_build == false }}
         run: |
           NEW_TAG="${{ steps.info.outputs.version }}"
           if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
@@ -237,6 +252,7 @@ jobs:
           echo "| **Image** | \`${{ steps.info.outputs.image }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Ports** | ${{ steps.info.outputs.ports }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Media tools** | ${{ inputs.needs_media_tools }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Test build** | ${{ inputs.test_build }} |" >> $GITHUB_STEP_SUMMARY
 
           if [ "${{ steps.envfile.outputs.baked }}" == "true" ]; then
              echo "| **.env** | ✅ Baked |" >> $GITHUB_STEP_SUMMARY
