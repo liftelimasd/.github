@@ -70,14 +70,29 @@ jobs:
           INPUT_VER="${{ inputs.version }}"
 
           if [ "${{ inputs.test_build }}" == "true" ]; then
-             # Build de testeo: la version es el nombre de rama sanitizado
-             # (los tags de Docker no admiten '/'). Se salta el auto-increment
-             # y el safety-check de version de produccion.
+             # Build de testeo: versionado por rama con su propio contador,
+             # separado de los git tags de produccion. El git tag tiene la forma
+             # test-<rama>.N y se auto-incrementa; la imagen Docker usa <rama>-N.
+             git fetch --tags --force > /dev/null 2>&1
              BRANCH=$(echo "${{ github.ref_name }}" | tr '/' '-')
-             FINAL_VER="$BRANCH"
+             TEST_PREFIX="test-${BRANCH}"
+
+             # Buscar el ultimo tag de test de esta rama e incrementar
+             LAST_TEST_TAG=$(git tag -l "${TEST_PREFIX}.*" --sort=-v:refname | head -n 1)
+             if [ -z "$LAST_TEST_TAG" ]; then
+                TEST_NUM=1
+             else
+                LAST_TEST_NUM=${LAST_TEST_TAG#${TEST_PREFIX}.}
+                if ! [[ "$LAST_TEST_NUM" =~ ^[0-9]+$ ]]; then LAST_TEST_NUM=0; fi
+                TEST_NUM=$((LAST_TEST_NUM + 1))
+             fi
+
+             # FINAL_VER es el git tag; la imagen usa <rama>-<num>
+             FINAL_VER="${TEST_PREFIX}.${TEST_NUM}"
+             DOCKER_TAG="${BRANCH}-${TEST_NUM}"
              # Sufijo -test en el nombre para separar del repo de imagen de prod
              SERVICE_NAME="${SERVICE_NAME}-test"
-             echo "Test build: image ${SERVICE_NAME}:${FINAL_VER}"
+             echo "Test build: image ${SERVICE_NAME}:${DOCKER_TAG} (git tag ${FINAL_VER})"
           elif [ -n "$INPUT_VER" ]; then
              # Manual override
              FINAL_VER="$INPUT_VER"
@@ -108,7 +123,7 @@ jobs:
              fi
 
              # Safety Check: Prevent accidental deployment of older major version if newer exists
-             GLOBAL_LATEST=$(git tag --sort=-v:refname | head -n 1)
+             GLOBAL_LATEST=$(git tag --sort=-v:refname | grep -v '^test-' | head -n 1)
              if [ -n "$GLOBAL_LATEST" ]; then
                  # Simple check: if global starts with v3 and config is v2 -> Error
                  GLOBAL_MAJOR=$(echo "$GLOBAL_LATEST" | cut -d. -f1)
@@ -125,7 +140,12 @@ jobs:
           CLEAN_VERSION="${FINAL_VER#v}"
           TIME_FMT=$(date +'%d-%m-%Y %H:%M')
           REGISTRY="registry.liftel.es:5000"
-          IMAGE="${REGISTRY}/${SERVICE_NAME}:${CLEAN_VERSION}"
+          # En test build la imagen usa <rama>-<num>; en prod usa la version limpia
+          if [ "${{ inputs.test_build }}" == "true" ]; then
+             IMAGE="${REGISTRY}/${SERVICE_NAME}:${DOCKER_TAG}"
+          else
+             IMAGE="${REGISTRY}/${SERVICE_NAME}:${CLEAN_VERSION}"
+          fi
 
           # Clean and sanitize variables before writing to GITHUB_OUTPUT
           # Remove any newlines, carriage returns, and trim whitespace
@@ -145,9 +165,9 @@ jobs:
           echo "registry=$REGISTRY" >> $GITHUB_OUTPUT
 
       - name: Create Git Tag
-        # Only create tag if version was auto-generated (input empty) AND it doesn't exist yet.
-        # Los builds de testeo nunca crean tag.
-        if: ${{ inputs.version == '' && inputs.test_build == false }}
+        # Crea tag cuando la version es auto-generada (input vacio) y no existe aun.
+        # Aplica tanto a produccion (v<major>.<n>) como a test (test-<rama>.<n>).
+        if: ${{ inputs.version == '' }}
         run: |
           NEW_TAG="${{ steps.info.outputs.version }}"
           if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
